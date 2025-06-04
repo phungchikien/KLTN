@@ -1,0 +1,248 @@
+heat_template_version: wallaby
+
+description: >
+  A stack for testing autoscale with OpenStack services:
+  - Nova: track instance state changes
+  - RabbitMQ: transport events (via Ceilometer/Aodh)
+  - Aodh: create alarms when instance is stopped/error/deleted
+  - Zaqar: alarm events are delivered to queue
+  - Mistral: workflow triggered to autoheal/replace instance
+
+parameters:
+  internal_network:
+    type: string
+    description: Network be used for communication between stack components - Internal network
+    default: internal_test
+
+  external_network:
+    type: string
+    description: Network to attach to server connection point, communication with public network - External network
+    default: external_test
+  
+  internal_subnet:
+    type: string
+    description: Subnet of Internal 
+    default: internal_subnet
+  
+  external_subnet:
+    type: string
+    description: Subnet of External
+    default: external_subnet
+
+  sec_group:
+    type: string
+    default: test_secgroup
+
+  key_name:
+    type: string
+    default: kien
+
+  image:
+    type: string
+    description: Glance image for instance
+    default: cirros-0.6.2-x86_64-disk
+    constraints:
+      - custom_constraint: glance.image
+        description: Must be a valid Glance image
+
+  flavor:
+    type: string
+    description: Nova flavor for instance
+    default: cirros256
+    constraints:
+      - custom_constraint: nova.flavor
+        description: Must be a valid Nova flavor
+
+  metadata:
+    type: json
+    default: {}
+  
+  enable_auto_healng:
+    type: boolean
+    default: true
+
+  root_stack_id:
+    type: string
+    default: ""
+    description: Used for nested stack update logic
+
+conditions:
+  is_standalone: {equals: [{get_param: root_stack_id}, ""]}
+
+resources:
+
+  # VM instance
+  server:
+    type: OS::Nova::Server
+    depends_on: [connection_point_internal, connection_point_external]
+    properties:
+      name: Server for testing autoheal#1
+      image: {get_param: image}
+      flavor: {get_param: flavor}
+      key_name: {get_param: key_name}
+      metadata: { get_param: metadata }
+      networks:
+        - port:
+            get_resource: connection_point_internal
+        - port: 
+            get_resource: connection_point_external
+      user_data_format: RAW
+      user_data:
+        str_replace:
+          template: |
+            #!/bin/sh -v
+            echo "IP: $cp1" /n "Floating_IP: $fip" > /var/www/http/indev.html && systemctl restart apache2 && exit 0
+          params:
+            $cp1: { get_attr: [connection_point_external, fixed_ips, 0, ip_address] }
+            $fip: { get_attr: [server_floatingIP, floating_ip_address] }
+
+  connection_point_internal:
+    type: OS::Neutron::Port
+    properties:
+      network: {get_param: internal_network}
+      fixed_ips:
+        - subnet: {get_param: internal_subnet}
+          ip_address: 10.0.1.50
+      security_groups: [{get_param: sec_group}]
+
+  connection_point_external:
+    type: OS::Neutron::Port
+    properties:
+      network: {get_param: external_network}
+      fixed_ips:
+        - subnet: {get_param: external_subnet}
+          ip_address: 192.168.100.50
+      security_groups: [{get_param: sec_group}]
+      
+  router:
+    type: OS::Neutron::Router
+    properties:
+      name: test_router
+      external_gateway_info:
+        network: public
+
+  router_interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet: { get_param: external_subnet }
+
+
+  server_floatingIP:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network: public
+      port_id: {get_resource: connection_point_external}
+
+
+  # Message queue for alarms
+  alarm_queue:
+    type: OS::Zaqar::Queue
+
+  # Aodh alarm - triggers on instance STOPPED state
+  stop_event_alarm:
+    type: OS::Aodh::EventAlarm
+    properties:
+      event_type: compute.instance.update
+      query:
+        - field: traits.instance_id
+          value: {get_resource: server}
+          op: eq
+        - field: traits.state
+          value: stopped
+          op: eq
+      alarm_queues:
+        - {get_resource: alarm_queue}
+
+  # Aodh alarm - triggers on instance ERROR state
+  error_event_alarm:
+    type: OS::Aodh::EventAlarm
+    properties:
+      event_type: compute.instance.update
+      query:
+        - field: traits.instance_id
+          value: {get_resource: server}
+          op: eq
+        - field: traits.state
+          value: error
+          op: eq
+      alarm_queues:
+        - {get_resource: alarm_queue}
+
+  # Aodh alarm - triggers on instance being deleted
+  delete_event_alarm:
+    type: OS::Aodh::EventAlarm
+    properties:
+      event_type: compute.instance.delete.start
+      query:
+        - field: traits.instance_id
+          value: {get_resource: server}
+          op: eq
+      alarm_queues:
+        - {get_resource: alarm_queue}
+
+  # Optional resource for debug (wait after alarm created)
+  alarm_cache_wait:
+    type: OS::Heat::TestResource
+    properties:
+      action_wait_secs:
+        create: 60
+        update: 60
+      value:
+        list_join:
+          - ''
+          - - {get_attr: [stop_event_alarm, show]}
+            - {get_attr: [error_event_alarm, show]}
+            - {get_attr: [delete_event_alarm, show]}
+
+  # Subscription that links Zaqar queue to Mistral workflow
+  alarm_subscription:
+    type: OS::Zaqar::MistralTrigger
+    properties:
+      queue_name: {get_resource: alarm_queue}
+      workflow_id: {get_resource: autoheal}
+      input:
+        stack_id: {get_param: "OS::stack_id"}
+        root_stack_id:
+          if:
+            - is_standalone
+            - {get_param: "OS::stack_id"}
+            - {get_param: "root_stack_id"}
+
+  # Mistral workflow that marks instance unhealthy & triggers update
+  autoheal:
+    type: OS::Mistral::Workflow
+    properties:
+      description: >
+        Mark the server as unhealthy and replace it by stack update.
+      input:
+        stack_id:
+        root_stack_id:
+      type: direct
+      tasks:
+        - name: resources_mark_unhealthy
+          action:
+            list_join:
+              - ' '
+              - - heat.resources_mark_unhealthy
+                - stack_id=<% $.stack_id %>
+                # Trích xuất instance_id từ event và truyền vào resource_name
+                - resource_name=<% env().notification.body.reason_data.event.traits.where($[0] = 'instance_id').select($[2]).first() %>
+                - mark_unhealthy=true
+                - resource_status_reason='Marked by alarm'
+          on_success:
+            - stacks_update
+
+        - name: stacks_update
+          action: heat.stacks_update stack_id=<% $.root_stack_id %> existing=true
+
+outputs:
+  server_internal_ip:
+    description: internal ip of server
+    value: {get_attr: [connection_point_internal, fixed_ips, 0, ip_address]}
+  server_external_ip:
+    description: external ip of server
+    value: {get_attr: [connection_point_external, fixed_ips, 0, ip_address]}
+  server_floating_ip:
+    description: floating ip of server
+    value: {get_attr: [server_floatingIP, floating_ip_address]}
