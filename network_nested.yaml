@@ -1,0 +1,98 @@
+heat_template_version: wallaby
+
+description: 
+
+parameters:
+  internal_nework:
+    type: string
+    default: internal_scale
+  external_network:
+    type: string
+    default: external_scale
+  internal_subnet:
+    type: string
+    default: internal_scale_subnet
+  external_subnet:
+    type: string
+    default: external_scale_subnet
+  security_group:
+    type: string
+    default: kien
+  
+resources:
+  internal_network:
+    type: OS::Neutron::Network
+    properties:
+      name: {get_param: internal_network}
+  
+  external_network:
+    type: OS::Neutron::Network
+    properties:
+      name: {get_param: external_network}
+      
+  internal_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: {get_resource: internal_network}
+      cidr: 10.0.10.0/24
+      ip_version: 4
+      
+  connection_point_internal: 
+    type: OS::Neutron::Port
+    properties:
+      network: {get_param: internal_network}
+      fixed_ips:
+        - subnet: {get_param: internal_subnet}
+          ip_address: 10.0.10.50
+      security_group: 
+        - {get_param: security_group}
+      
+  external_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: {get_resource: external_network}
+      cidr: 192.168.10.0/24
+      ip_version: 4
+      
+  connection_point_external:
+    type: OS::Neutron::Port
+    properties:
+      network: {get_param: external_network}
+      fixed_ips:
+        - subnet: {get_param: external_subnet}
+          ip_address: 192.168.10.50
+      security_group:
+        - {get_param: security_group}
+      
+  router:
+    type: OS::Neutron::Router
+    properties:
+      name: scale_router
+      external_gateway_info:
+        network: public
+        
+  router_interface:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: {get_resource: router}
+      subnet: {get_resource: external_subnet}
+      
+  floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network: public
+      port_id: {get_resource: connection_point_external}
+      
+outputs:
+  internal_ip:
+    description: internal IP config for internal port
+    value: {get_attr: [connection_point_internal, fixed_ips, 0, ip_address]}
+  external_ip:
+    description: external IP config for external port
+    value: {get_attr: [connection_point_external, fixed_ips, 0, ip_address]}
+  floating_ip:
+    description: floating IP used for connecting with public network
+    value: {get_attr: [floating_ip, floating_ip_address]}
+      
+      
+      
