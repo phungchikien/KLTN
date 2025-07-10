@@ -1,0 +1,159 @@
+heat_template_version: wallaby
+description: >
+Deploy Neutron FWaaS using Heat project, Include 1 external network, 1 router, 1 internal network, 1 FWaaS and 1 VM instance.
+
+parameters:
+ key_name:
+  type: string
+  description: SSH pair keys
+  default: kien
+ 
+ image:
+  type: string
+  description: image for VM instance
+  default: ubuntu_cloud
+  
+ flavor:
+  type: string
+  description: flavor for VM instance
+  default: m1.small
+  
+ public_network:
+  type: string
+  default: public
+  
+ private_network:
+  type: string
+  default: private-test-net
+ 
+ private_subnet_cidr:
+  type: string
+  description: CIDR for new subnet (eg:192.268.100.0/24) 
+  default: 192.168.100.0/24
+  
+ private_subnet:
+  type: string
+  description: IP for subnet port
+  default: 192.168.100.1
+  
+ target_app_port:
+  type: number
+  description: Port for target app (eg:80 for HTTP)
+  default: 80 
+ 
+ target_app_protocol:
+  type: string
+  description: Protocol for target app
+  default: tcp
+
+resources:
+ #Private network and subnet
+ private_net:
+  type: OS::Neutron::Net
+  properties:
+   name: {get_param: private_network}
+   
+ private_subnet:
+  type: OS::Neutron::Subnet
+  properties:
+   network_id: {get_resource: private_net}
+   cidr: {get_param: private_subnet_cidr}
+   gateway_ip: {get_param: private_subnet_gateway}
+   ip_version: 4
+   dns_nameservers: ["8.8.8.8", "8.8.4.4"]
+   
+ #Neutron Router
+ router:
+  type: OS::Neutron::Router
+  properties:
+   name: Test_FW_Router
+   external_gateway_info: 
+    network: {get_param: public_network}
+    
+ # Rules, Policies and FW Group
+ # Allow traffic get in target port
+ fwaas_rule_allow_app:
+  type: OS::Neutron::FirewallRule
+  properties:
+   protocol: {get_param: target_app_protocol}
+   destination_port: {get_param: target_app_port}
+   action: allow
+   enabled: true
+   
+ #Policy for grouping Rules, included 1 default rule is reject all configured in the lowest priority.
+ fwaas_group:
+  type: OS::Neutron::FirewallPolicy  
+  properties:
+   name: test-fwaas-policy
+   firewall_rule:
+    - {get_resource: fwaas_rule_allow_app}
+    
+ #Port for private interface of router, where fwaas policy is applied
+ router_private_port:
+  type: OS::Neutron::Port
+  properties:
+   network_id: {get_resource: private_net}
+   fixed_ips:
+    - subnet_id: {get_resource: private_subent}
+   firewall_group_id: {get_resource: fwaas_group} #Applied FWaaS for this port
+   
+ #Router interface for connection between router and port created clearly
+ router_interface_with_fwaas:
+  type: OS::Neutron::RouterInterface
+  properties:
+   router_id: {get_resource: router}
+   port_id: {get_resource: router_private_port} # Link Router with FWaaS applied port
+   
+ #VM target
+ target_app_server_port:
+  type: OS:Neutron::Port
+  properties:
+   network_id: {get_resource: private_net}
+   fixed_ips:
+    - subnet_id: {get_resource: private_subnet}
+   security_groups:
+    - default: kien #allow comment connection in security group
+    
+ target_app_server:
+  type: OS::Nova::Server
+  properties:
+   name: target_app_server
+   image: {get_param: image}
+   flavor: {get_param: flavor}
+   key_name: {get_param: key_name}
+   networks:
+    - port: {get_resource: target_app_server_port}
+   user_data: | #Config basic nginx server
+    #!/bin/bash
+    sudo apt-get update
+    sudo apt-get install -y nginx
+    sudo systemctl start nginx
+    sudo systemctl enable nginx
+    echo "Hello form OpenStack FWaaS Test Server!" | sudo tee /var/www/html/index.html
+    
+ #Floating IP for Server connection from internet
+ target_app_floating_ip:
+  type: OS::Neutron::FloatingIP
+  properties: 
+   floating_network: {get_param: public_network}
+   port_id: {get_resource: target_app_server_port}
+   
+outputs:
+ private_network_id:
+  description: ID of a private network
+  value: {get_resource: private_net}
+ private_subnet_id:
+  description: ID of a private subnet
+  value: {get_resource: private_subnet}
+ router_id:
+  description: ID of a router
+  value: {get_resource: router}
+ target_app_private_ip:
+  description: Private IP of target server
+  value: {get_attr: [target_app_server, first_address]}
+ target_app_public_ip:
+  description: Public IP (FLoating) of target server
+  value: {get_attr: [target_app_floating_ip, floating_ip_address]}
+ fwaas_group_id:
+  description: ID of FWaaS group created
+  value: {get_resource: fwaas_group}
