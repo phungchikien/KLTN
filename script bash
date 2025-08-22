@@ -311,6 +311,7 @@ run_hping3_burst() {
     hping3 \
         -S \
         -p 80 \
+        -flood \
         -i "u$interval_us" \
         -c $((rate * duration)) \
         --interface "$INTERFACE" \
