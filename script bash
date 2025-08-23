@@ -52,7 +52,7 @@ calculate_hourly_rate() {
     local base_rate=10  # Base packets per second
     local max_rate=100  # Maximum packets per second
     
-    # Hàm T(t) - Traffic pattern theo giờ (giữ nguyên)
+    # Hàm T(t) - Traffic pattern theo giờ 
     local morning_peak=$(echo "scale=6; 25 * e(-1 * (($hour - 9) ^ 2) / 6.25)" | bc -l)
     local evening_peak=$(echo "scale=6; 45 * e(-1 * (($hour - 20) ^ 2) / 7.84)" | bc -l)
     local night_drop=$(echo "scale=6; -15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)" | bc -l)
@@ -62,7 +62,9 @@ calculate_hourly_rate() {
     local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)
     local pps=$(echo "scale=0; if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)
     
-    if (( $(echo "$pps < 5" | bc -l) )); then
+    #sử dụng bc cho phép so sánh số thực
+    local is_less_than_5=$(echo "$pps < 5" | bc -l)
+    if [ "$is_less_than_5" -eq 1 ]; then
         pps=5
     fi
     
@@ -105,7 +107,7 @@ generate_compressed_pattern() {
     log "Real duration: ${duration_seconds}s = Virtual duration: $(echo "scale=1; $duration_seconds * $compression_factor / 3600" | bc -l) hours"
     log "Virtual speed: 1 real second = $(echo "scale=1; $compression_factor / 60" | bc -l) virtual minutes"
     
-    local update_interval=5  # Update every 5 seconds
+    local update_interval=5  # Update mỗi 5 giây
     local current_time=0
     
     while [ $current_time -lt $duration_seconds ]; do
@@ -129,7 +131,8 @@ generate_compressed_pattern() {
         local final_rate=$(echo "scale=0; $base_rate * (1 + $noise)" | bc -l)
         
         # Đảm bảo rate tối thiểu
-        if (( $(echo "$final_rate < 1" | bc -l) )); then
+        local is_less_than_1=$(echo "$final_rate < 1" | bc -l)
+        if [ "$is_less_than_1" -eq 1 ]; then
             final_rate=1
         fi
         
@@ -173,7 +176,8 @@ generate_yoyo_pattern() {
         case "$yoyo_type" in
             "square")
                 # Pattern vuông: HIGH-LOW-HIGH-LOW
-                if (( $(echo "$cycle_position < 0.5" | bc -l) )); then
+                local is_first_half=$(echo "$cycle_position < 0.5" | bc -l)
+                if [ "$is_first_half" -eq 1 ]; then
                     rate=100  # HIGH phase
                 else
                     rate=10   # LOW phase
@@ -181,7 +185,8 @@ generate_yoyo_pattern() {
                 ;;
             "sawtooth")
                 # Pattern răng cưa: tăng dần rồi drop xuống
-                if (( $(echo "$cycle_position < 0.8" | bc -l) )); then
+                local is_ramp_phase=$(echo "$cycle_position < 0.8" | bc -l)
+                if [ "$is_ramp_phase" -eq 1 ]; then
                     rate=$(echo "scale=0; 10 + 90 * $cycle_position / 0.8" | bc -l)
                 else
                     rate=10  # Sharp drop
@@ -194,9 +199,12 @@ generate_yoyo_pattern() {
             "random")
                 # Pattern ngẫu nhiên nhưng có chu kỳ
                 local random_factor=$(echo "scale=6; ($RANDOM % 1000) / 1000" | bc -l)
-                if (( $(echo "$cycle_position < 0.3" | bc -l) )); then
+                local is_high_phase=$(echo "$cycle_position < 0.3" | bc -l)
+                local is_med_phase=$(echo "$cycle_position < 0.7" | bc -l)
+                
+                if [ "$is_high_phase" -eq 1 ]; then
                     rate=$(echo "scale=0; 80 + 20 * $random_factor" | bc -l)  # HIGH
-                elif (( $(echo "$cycle_position < 0.7" | bc -l) )); then
+                elif [ "$is_med_phase" -eq 1 ]; then
                     rate=$(echo "scale=0; 40 + 30 * $random_factor" | bc -l)  # MED
                 else
                     rate=$(echo "scale=0; 5 + 15 * $random_factor" | bc -l)   # LOW
@@ -204,9 +212,12 @@ generate_yoyo_pattern() {
                 ;;
             "burst")
                 # Pattern burst: im lặng rồi bùng nổ
-                if (( $(echo "$cycle_position < 0.1" | bc -l) )); then
+                local is_burst_phase=$(echo "$cycle_position < 0.1" | bc -l)
+                local is_cooldown_phase=$(echo "$cycle_position < 0.2" | bc -l)
+                
+                if [ "$is_burst_phase" -eq 1 ]; then
                     rate=200  # Massive burst
-                elif (( $(echo "$cycle_position < 0.2" | bc -l) )); then
+                elif [ "$is_cooldown_phase" -eq 1 ]; then
                     rate=50   # Cool down
                 else
                     rate=5    # Silent period
@@ -214,11 +225,15 @@ generate_yoyo_pattern() {
                 ;;
             "step")
                 # Pattern step: tăng từng bước
-                if (( $(echo "$cycle_position < 0.25" | bc -l) )); then
+                local is_step1=$(echo "$cycle_position < 0.25" | bc -l)
+                local is_step2=$(echo "$cycle_position < 0.5" | bc -l)
+                local is_step3=$(echo "$cycle_position < 0.75" | bc -l)
+                
+                if [ "$is_step1" -eq 1 ]; then
                     rate=20
-                elif (( $(echo "$cycle_position < 0.5" | bc -l) )); then
+                elif [ "$is_step2" -eq 1 ]; then
                     rate=50
-                elif (( $(echo "$cycle_position < 0.75" | bc -l) )); then
+                elif [ "$is_step3" -eq 1 ]; then
                     rate=80
                 else
                     rate=100
@@ -227,7 +242,8 @@ generate_yoyo_pattern() {
         esac
         
         # Đảm bảo rate minimum
-        if (( $(echo "$rate < 1" | bc -l) )); then
+        local is_less_than_1=$(echo "$rate < 1" | bc -l)
+        if [ "$is_less_than_1" -eq 1 ]; then
             rate=1
         fi
         
@@ -281,19 +297,19 @@ demo_compression_levels() {
     
     # 1 phút = 1 ngày (1440x compression)
     log "Demo 1: 60 seconds = 24 virtual hours (1440x compression)"
-    generate_compressed_pattern 60 1440
+    generate_compressed_pattern 60
     
     sleep 10
     
     # 2 phút = 1 tuần (5040x compression) 
     log "Demo 2: 120 seconds = 7 virtual days (5040x compression)"
-    generate_compressed_pattern 120 5040
+    TIME_COMPRESSION=5040 generate_compressed_pattern 120
     
     sleep 10
     
     # 5 phút = 1 tuần (2016x compression)
     log "Demo 3: 300 seconds = 7 virtual days (2016x compression)"
-    generate_compressed_pattern 300 2016
+    TIME_COMPRESSION=2016 generate_compressed_pattern 300
 }
 
 # Hàm chạy hping3 (giữ nguyên)
@@ -311,7 +327,6 @@ run_hping3_burst() {
     hping3 \
         -S \
         -p 80 \
-        -flood \
         -i "u$interval_us" \
         -c $((rate * duration)) \
         --interface "$INTERFACE" \
@@ -411,7 +426,7 @@ main() {
     
     case "$mode" in
         "compressed")
-            generate_compressed_pattern "$DURATION" "$TIME_COMPRESSION"
+            generate_compressed_pattern "$DURATION"
             ;;
         "demo")
             demo_compression_levels
