@@ -49,10 +49,10 @@ get_compressed_day() {
 # Hàm tính toán traffic rate theo giờ (giữ nguyên công thức)
 calculate_hourly_rate() {
     local hour=$1
-    local base_rate=10  # Base packets per second
-    local max_rate=100  # Maximum packets per second
+    local base_rate=50000  # Base packets per second
+    local max_rate=90000  # Maximum packets per second
     
-    # Hàm T(t) - Traffic pattern theo giờ 
+    # Hàm T(t) - Traffic pattern theo giờ (giữ nguyên)
     local morning_peak=$(echo "scale=6; 25 * e(-1 * (($hour - 9) ^ 2) / 6.25)" | bc -l)
     local evening_peak=$(echo "scale=6; 45 * e(-1 * (($hour - 20) ^ 2) / 7.84)" | bc -l)
     local night_drop=$(echo "scale=6; -15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)" | bc -l)
@@ -62,7 +62,7 @@ calculate_hourly_rate() {
     local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)
     local pps=$(echo "scale=0; if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)
     
-    #sử dụng bc cho phép so sánh số thực
+    # Sửa lỗi: sử dụng bc cho phép so sánh số thực
     local is_less_than_5=$(echo "$pps < 5" | bc -l)
     if [ "$is_less_than_5" -eq 1 ]; then
         pps=5
@@ -107,7 +107,7 @@ generate_compressed_pattern() {
     log "Real duration: ${duration_seconds}s = Virtual duration: $(echo "scale=1; $duration_seconds * $compression_factor / 3600" | bc -l) hours"
     log "Virtual speed: 1 real second = $(echo "scale=1; $compression_factor / 60" | bc -l) virtual minutes"
     
-    local update_interval=5  # Update mỗi 5 giây
+    local update_interval=5  # Update every 5 seconds
     local current_time=0
     
     while [ $current_time -lt $duration_seconds ]; do
@@ -124,15 +124,17 @@ generate_compressed_pattern() {
         local minute_factor=$(echo "scale=6; 1 + 0.3 * s(2 * 3.14159 * $virtual_minute / 60)" | bc -l)
         
         # Kết hợp các factor
-        local base_rate=$(echo "scale=0; $hourly_rate * $weekly_multiplier * $minute_factor" | bc -l)
+        local base_rate=$(echo "scale=6; $hourly_rate * $weekly_multiplier * $minute_factor" | bc -l)
         
         # Thêm nhiễu ngẫu nhiên ±20%
-        local noise=$(echo "scale=6; (($RANDOM % 200) - 100) / 500" | bc -l)
-        local final_rate=$(echo "scale=0; $base_rate * (1 + $noise)" | bc -l)
+        local noise=$(echo "scale=6; (($RANDOM % 80) - 100) / 500" | bc -l)
+        local final_rate_float=$(echo "scale=6; $base_rate * (1 + $noise)" | bc -l)
         
-        # Đảm bảo rate tối thiểu
-        local is_less_than_1=$(echo "$final_rate < 1" | bc -l)
-        if [ "$is_less_than_1" -eq 1 ]; then
+        # Chuyển về số nguyên và đảm bảo rate tối thiểu
+        local final_rate=$(echo "scale=0; if($final_rate_float < 1) 1 else ($final_rate_float + 0.5) / 1" | bc -l)
+        
+        # Đảm bảo final_rate là số nguyên dương
+        if [ -z "$final_rate" ] || [ "$final_rate" -lt 1 ]; then
             final_rate=1
         fi
         
@@ -187,14 +189,16 @@ generate_yoyo_pattern() {
                 # Pattern răng cưa: tăng dần rồi drop xuống
                 local is_ramp_phase=$(echo "$cycle_position < 0.8" | bc -l)
                 if [ "$is_ramp_phase" -eq 1 ]; then
-                    rate=$(echo "scale=0; 10 + 90 * $cycle_position / 0.8" | bc -l)
+                    local rate_float=$(echo "scale=6; 10 + 90 * $cycle_position / 0.8" | bc -l)
+                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)
                 else
                     rate=10  # Sharp drop
                 fi
                 ;;
             "sine")
                 # Pattern sin: lên xuống mềm mại
-                rate=$(echo "scale=0; 50 + 45 * s(2 * 3.14159 * $cycle_position)" | bc -l)
+                local rate_float=$(echo "scale=6; 50 + 45 * s(2 * 3.14159 * $cycle_position)" | bc -l)
+                rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)
                 ;;
             "random")
                 # Pattern ngẫu nhiên nhưng có chu kỳ
@@ -203,11 +207,14 @@ generate_yoyo_pattern() {
                 local is_med_phase=$(echo "$cycle_position < 0.7" | bc -l)
                 
                 if [ "$is_high_phase" -eq 1 ]; then
-                    rate=$(echo "scale=0; 80 + 20 * $random_factor" | bc -l)  # HIGH
+                    local rate_float=$(echo "scale=6; 80 + 20 * $random_factor" | bc -l)
+                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)  # HIGH
                 elif [ "$is_med_phase" -eq 1 ]; then
-                    rate=$(echo "scale=0; 40 + 30 * $random_factor" | bc -l)  # MED
+                    local rate_float=$(echo "scale=6; 40 + 30 * $random_factor" | bc -l)
+                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)  # MED
                 else
-                    rate=$(echo "scale=0; 5 + 15 * $random_factor" | bc -l)   # LOW
+                    local rate_float=$(echo "scale=6; 5 + 15 * $random_factor" | bc -l)
+                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)   # LOW
                 fi
                 ;;
             "burst")
@@ -241,9 +248,8 @@ generate_yoyo_pattern() {
                 ;;
         esac
         
-        # Đảm bảo rate minimum
-        local is_less_than_1=$(echo "$rate < 1" | bc -l)
-        if [ "$is_less_than_1" -eq 1 ]; then
+        # Đảm bảo rate minimum và là số nguyên
+        if [ -z "$rate" ] || [ "$rate" -lt 1 ]; then
             rate=1
         fi
         
@@ -312,23 +318,34 @@ demo_compression_levels() {
     TIME_COMPRESSION=2016 generate_compressed_pattern 300
 }
 
-# Hàm chạy hping3 (giữ nguyên)
+# Hàm chạy hping3 (sửa lỗi số thực)
 run_hping3_burst() {
     local target=$1
     local rate=$2
     local duration=$3
     
-    local interval_us=$(echo "scale=0; 1000000 / $rate" | bc -l)
+    # Đảm bảo rate là số nguyên
+    local rate_int=$(echo "scale=0; $rate / 1" | bc -l)
+    
+    local interval_us=$(echo "scale=0; 1000000 / $rate_int" | bc -l)
+    
+    # Tính tổng số packet cần gửi bằng bc
+    local total_packets=$(echo "scale=0; $rate_int * $duration" | bc -l)
     
     if [ "$VERBOSE" = true ]; then
-        echo "  -> hping3 rate: ${rate}pps for ${duration}s"
+        echo "  -> hping3 rate: ${rate_int}pps for ${duration}s (total: ${total_packets} packets)"
+    fi
+    
+    # Đảm bảo total_packets ít nhất là 1
+    if [ "$total_packets" -lt 1 ]; then
+        total_packets=1
     fi
     
     hping3 \
         -S \
         -p 80 \
         -i "u$interval_us" \
-        -c $((rate * duration)) \
+        -c "$total_packets" \
         --interface "$INTERFACE" \
         "$target" \
         >> "$LOG_FILE" 2>&1 || true
