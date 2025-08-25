@@ -16,51 +16,52 @@ VERBOSE=true
 
 # Hàm logging
 log() {
-    local message="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$timestamp] $message" | tee -a "$LOG_FILE"
+    local message="$1"                                    #lấy đối số thứ 1 khi gọi hàm làm message
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')          #gọi lệnh date để lấy thời gian hiện tại của hệ thống. Sử dụng $(...) để lưu kết quả vào biến timestamp
+    echo "[$timestamp] $message" | tee -a "$LOG_FILE"     #in ra và ghi vào file log 
 }
 
 # Hàm tính toán thời gian thực tế dựa trên compression
-get_compressed_hour() {
-    local elapsed_seconds=$1
-    local compression_factor=$TIME_COMPRESSION
+get_compressed_hour() {                                    
+    local elapsed_seconds=$1                              #lấy đối số thứ 1 khi gọi hàm làm số giây thực đã trôi qua
+    local compression_factor=$TIME_COMPRESSION            #hệ số nén thời gian, default sẽ là 72x nhưng có thể thay đổi tùy theo user nhập vào khi chạy chương trình
     
     # Tính toán giờ trong ngày dựa trên thời gian đã trôi qua
-    # Ví dụ: với compression 72x, 300 giây = 6 giờ thực tế
-    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)
-    local current_hour=$(echo "scale=0; $virtual_hours % 24" | bc -l)
+    # Ví dụ: với compression 72x, 300 giây thực = 6 giờ ảo đã trôi qua
+    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)    #đổi từ giây ảo sang giờ ảo, nhân giây thực cho tỉ số nén, sau đó chia cho 3600 - số giây 1 tiếng
+    local current_hour=$(echo "scale=0; $virtual_hours % 24" | bc -l)                               #lấy giờ trong ngày, ví dụ 6 giờ ảo % 24 = 6 => trôi qua 6 tiếng ảo
     
-    echo "$current_hour"
+    echo "$current_hour"                                   #trả lại kết quả
 }
 
 get_compressed_day() {
-    local elapsed_seconds=$1
-    local compression_factor=$TIME_COMPRESSION
+    local elapsed_seconds=$1                               #lấy đối số thứ 1 khi gọi hàm làm số giây thực đã trôi qua
+    local compression_factor=$TIME_COMPRESSION              #hệ số nén thời gian, default sẽ là 72x nhưng có thể thay đổi tùy theo user nhập vào khi chạy chương trình
     
     # Tính toán ngày trong tuần (1-7)
-    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)
-    local virtual_days=$(echo "scale=6; $virtual_hours / 24" | bc -l)
-    local day_of_week=$(echo "scale=0; ($virtual_days % 7) + 1" | bc -l)
+    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)    #đổi từ giây ảo sang giờ ảo, nhân giây thực cho tỉ số nén, sau đó chia cho 3600 - số giây 1 tiếng
+    local virtual_days=$(echo "scale=6; $virtual_hours / 24" | bc -l)                               #lấy giờ trong ngày, ví dụ 6 giờ ảo % 24 = 6 => trôi qua 6 tiếng ảo
+    local day_of_week=$(echo "scale=0; ($virtual_days % 7) + 1" | bc -l)                            #lấy ngày trong tuần
     
     echo "$day_of_week"
 }
 
 # Hàm tính toán traffic rate theo giờ (giữ nguyên công thức)
 calculate_hourly_rate() {
-    local hour=$1
-    local base_rate=50000  # Base packets per second
-    local max_rate=90000  # Maximum packets per second
+    local hour=$1                                        #lấy đối số thứ nhất khi gọi hàm để xác định hiện tại là mấy giờ, lưu vào biến hour (0-23)
+    local base_rate=50000                                #đây là mức base packet gửi mỗi giây
+    local max_rate=90000                                 #đây là mức maximum packet gửi mỗi giây
     
-    # Hàm T(t) - Traffic pattern theo giờ (giữ nguyên)
-    local morning_peak=$(echo "scale=6; 25 * e(-1 * (($hour - 9) ^ 2) / 6.25)" | bc -l)
+    # Hàm T(t) - Traffic pattern theo giờ (giữ nguyên), tách thành các hàm toán học nhỏ, mô tả peak và valley của đồ thị.
+    # Thứ tự: Hàm Gaussian, center ở 9h sáng với mức max = 25 units, tiếp theo là tối, peak ở 20h, max = 45 units, tiếp đó là hàm có giá trị âm, mô tả night drop, là vùng valley
+    local morning_peak=$(echo "scale=6; 25 * e(-1 * (($hour - 9) ^ 2) / 6.25)" | bc -l) 
     local evening_peak=$(echo "scale=6; 45 * e(-1 * (($hour - 20) ^ 2) / 7.84)" | bc -l)
     local night_drop=$(echo "scale=6; -15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)" | bc -l)
     local daily_cycle=$(echo "scale=6; 5 * s(3.14159 * $hour / 12 - 3.14159/2)" | bc -l)
-    local base_level=20
+    local base_level=20000                                #mức cộng thêm để tránh giá trị âm
     
-    local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)
-    local pps=$(echo "scale=0; if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)
+    local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)                    #tổng chính là hệ số traffic cho giờ đó
+    local pps=$(echo "scale=0; if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)     #  
     
     # Sửa lỗi: sử dụng bc cho phép so sánh số thực
     local is_less_than_5=$(echo "$pps < 5" | bc -l)
