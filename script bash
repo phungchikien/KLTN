@@ -74,13 +74,11 @@ calculate_hourly_rate() {
 
 # Hàm tính toán traffic rate theo ngày trong tuần (giữ nguyên)
 calculate_weekly_multiplier() {
-    local day_of_week=$1
-    
-    local base=87
-    local sine_component=$(echo "scale=6; 8 * s(2 * 3.14159 * $day_of_week / 7 + 3.14159/7)" | bc -l)
-    local weekend_spike=$(echo "scale=6; 5 * e(-1 * (($day_of_week - 6) ^ 2) / 2.25)" | bc -l)
-    
-    local weekly_factor=$(echo "scale=6; ($base + $sine_component + $weekend_spike) / $base" | bc -l)
+    local day_of_week=$1								#đầu vào đại diện một ngày trong tuần
+    local base=87										#mức base traffic
+    local sine_component=$(echo "scale=6; 8 * s(2 * 3.14159 * $day_of_week / 7 + 3.14159/7)" | bc -l)		#Hàm sin với chu kỳ 7 ngày, mô phỏng dao động trong 1 tuần
+    local weekend_spike=$(echo "scale=6; 5 * e(-1 * (($day_of_week - 6) ^ 2) / 2.25)" | bc -l)				#Spike vào thứ 7, theo nghiên cứu
+    local weekly_factor=$(echo "scale=6; ($base + $sine_component + $weekend_spike) / $base" | bc -l)		#Chia cho base để tìm mức tăng, mô phỏng rõ sự khác nhau về tải giữa các ngày trong tuần
     
     echo "$weekly_factor"
 }
@@ -174,16 +172,16 @@ generate_yoyo_pattern() {
     
     while [ $current_time -lt $duration_seconds ]; do
         local cycle_position=$(echo "scale=6; ($current_time % $cycle_duration) / $cycle_duration" | bc -l)
-        local rate=10  # Base rate
+        local rate=10000  # Base rate
         
         case "$yoyo_type" in
             "square")
                 # Pattern vuông: HIGH-LOW-HIGH-LOW
                 local is_first_half=$(echo "$cycle_position < 0.5" | bc -l)
                 if [ "$is_first_half" -eq 1 ]; then
-                    rate=100  # HIGH phase
+                    rate=20000  # HIGH phase
                 else
-                    rate=10   # LOW phase
+                    rate=10000   # LOW phase
                 fi
                 ;;
             "sawtooth")
@@ -272,7 +270,7 @@ generate_yoyo_pattern() {
     done
 }
 
-# Hàm demo các Yo-Yo patterns
+# Hàm demo các Yo-Yo patterns, sử dụng cho user mới không biết nên sử dụng pattern nào
 demo_yoyo_patterns() {
     log "=== YO-YO PATTERNS DEMO ==="
     
