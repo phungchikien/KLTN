@@ -186,7 +186,7 @@ generate_yoyo_pattern() {
                 # Pattern vuông: HIGH-LOW-HIGH-LOW
                 local is_first_half=$(echo "$cycle_position < 0.5" | bc -l)
                 if [ "$is_first_half" -eq 1 ]; then
-                    rate=20000  # HIGH phase
+                    rate=100000  # HIGH phase
                 else
                     rate=10000   # LOW phase
                 fi
@@ -229,11 +229,11 @@ generate_yoyo_pattern() {
                 local is_cooldown_phase=$(echo "$cycle_position < 0.2" | bc -l)
                 
                 if [ "$is_burst_phase" -eq 1 ]; then
-                    rate=200  # Massive burst
+                    rate=100000  # Massive burst
                 elif [ "$is_cooldown_phase" -eq 1 ]; then
-                    rate=50   # Cool down
+                    rate=50000  # Cool down
                 else
-                    rate=5    # Silent period
+                    rate=10000    # Silent period
                 fi
                 ;;
             "step")
@@ -243,13 +243,13 @@ generate_yoyo_pattern() {
                 local is_step3=$(echo "$cycle_position < 0.75" | bc -l)
                 
                 if [ "$is_step1" -eq 1 ]; then
-                    rate=20
+                    rate=20000
                 elif [ "$is_step2" -eq 1 ]; then
-                    rate=50
+                    rate=50000
                 elif [ "$is_step3" -eq 1 ]; then
-                    rate=80
+                    rate=80000
                 else
-                    rate=100
+                    rate=100000
                 fi
                 ;;
         esac
