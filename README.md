@@ -1,5 +1,6 @@
 # KLTN
 Chuan bi moi truong
+
 Cài đặt dependencies
 sudo apt-get update
 sudo apt-get install hping3 bc
