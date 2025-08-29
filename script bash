@@ -1,480 +1,536 @@
 #!/bin/bash
 
 # =================================================================
-# HPING3 TRAFFIC SIMULATOR WITH TIME COMPRESSION
+# OPTIMIZED HPING3 TRAFFIC SIMULATOR WITH TIME COMPRESSION
 # =================================================================
-# Mô phỏng lưu lượng mạng với chu kỳ rút ngắn nhưng giữ nguyên pattern
-# Sử dụng time compression factor để co giãn thời gian
 
-# Cấu hình mặc định
+set -euo pipefail  # Exit on error, undefined vars, pipe failures thì trả lại error ở command bị fail
+
+# Cấu hình mặc định với readonly
+readonly SCRIPT_NAME=$(basename "$0")
+readonly SCRIPT_DIR=$(dirname "$(realpath "$0")")
+readonly PID_FILE="/tmp/${SCRIPT_NAME}.pid"
+readonly DEFAULT_LOG_DIR="./logs"
+
+# Tạo thư mục log nếu chưa tồn tại
+mkdir -p "$DEFAULT_LOG_DIR"
+
+# Cấu hình với validation
 TARGET_IP="${1:-8.8.8.8}"
-INTERFACE="${2:-eth0}"
-DURATION="${3:-300}"  # Mặc định 5 phút
-TIME_COMPRESSION="${4:-72}"  # 1 giờ thực = 50 giây (72x nhanh hơn)
-LOG_FILE="hping3_traffic_compressed_$(date +%Y%m%d_%H%M%S).log"
-VERBOSE=true
+INTERFACE="${2:-$(ip route | grep '^default' | grep -o 'dev [^ ]*' | cut -d' ' -f2 | head -1)}"         # Tự lấy tên card mạng thay vì để user nhập vào
+DURATION="${3:-300}"
+TIME_COMPRESSION="${4:-72}"
+MODE="${5:-compressed}"
+YOYO_TYPE="${6:-square}"
 
-# Hàm logging
+readonly TARGET_IP INTERFACE DURATION TIME_COMPRESSION MODE YOYO_TYPE
+readonly LOG_FILE="${DEFAULT_LOG_DIR}/hping3_traffic_$(date +%Y%m%d_%H%M%S).log"
+readonly VERBOSE=${VERBOSE:-true}
+
+# Mảng để lưu PIDs của background processes
+declare -a BACKGROUND_PIDS=()
+
+# Trap để cleanup khi script kết thúc
+cleanup() {
+    local exit_code=$?
+    log "Cleaning up..."
+    
+    # Kill all background processes, lặp theo all IDs
+    for pid in "${BACKGROUND_PIDS[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null || true
+        fi
+    done
+    
+    # Kill all hping3 processes
+    pkill -f "hping3.*$TARGET_IP" 2>/dev/null || true
+    
+    # Remove PID file
+    [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
+    
+    log "Cleanup completed with exit code: $exit_code"
+    exit $exit_code
+}
+
+trap cleanup EXIT INT TERM
+
+# ghi log vào file log
 log() {
-    local message="$1"                                    #lấy đối số thứ 1 khi gọi hàm làm message
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')          #gọi lệnh date để lấy thời gian hiện tại của hệ thống. Sử dụng $(...) để lưu kết quả vào biến timestamp
-    echo "[$timestamp] $message" | tee -a "$LOG_FILE"     #in ra và ghi vào file log 
+    local level="${2:-INFO}"
+    local message="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    printf "[%s] [%s] %s\n" "$timestamp" "$level" "$message" | tee -a "$LOG_FILE"
 }
 
-# Hàm tính toán thời gian thực tế dựa trên compression
-get_compressed_hour() {                                    
-    local elapsed_seconds=$1                              #lấy đối số thứ 1 khi gọi hàm làm số giây thực đã trôi qua
-    local compression_factor=$TIME_COMPRESSION            #hệ số nén thời gian, default sẽ là 72x nhưng có thể thay đổi tùy theo user nhập vào khi chạy chương trình
-    
-    # Tính toán giờ trong ngày dựa trên thời gian đã trôi qua
-    # Ví dụ: với compression 72x, 300 giây thực = 6 giờ ảo đã trôi qua
-    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)    #đổi từ giây ảo sang giờ ảo, nhân giây thực cho tỉ số nén, sau đó chia cho 3600 - số giây 1 tiếng
-    local current_hour=$(echo "scale=0; $virtual_hours % 24" | bc -l)                               #lấy giờ trong ngày, ví dụ 6 giờ ảo % 24 = 6 => trôi qua 6 tiếng ảo
-    
-    echo "$current_hour"                                   #trả lại kết quả
-}
+log_error() { log "$1" "ERROR"; }
+log_warn() { log "$1" "WARN"; }
+log_debug() { [[ "$VERBOSE" == true ]] && log "$1" "DEBUG"; }
 
-get_compressed_day() {
-    local elapsed_seconds=$1                               #lấy đối số thứ 1 khi gọi hàm làm số giây thực đã trôi qua
-    local compression_factor=$TIME_COMPRESSION              #hệ số nén thời gian, default sẽ là 72x nhưng có thể thay đổi tùy theo user nhập vào khi chạy chương trình
-    
-    # Tính toán ngày trong tuần (1-7)
-    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)    #đổi từ giây ảo sang giờ ảo, nhân giây thực cho tỉ số nén, sau đó chia cho 3600 - số giây 1 tiếng
-    local virtual_days=$(echo "scale=6; $virtual_hours / 24" | bc -l)                               #lấy giờ trong ngày, ví dụ 6 giờ ảo % 24 = 6 => trôi qua 6 tiếng ảo
-    local day_of_week=$(echo "scale=0; ($virtual_days % 7) + 1" | bc -l)                            #lấy ngày trong tuần
-    
-    echo "$day_of_week"
-}
-
-# Hàm tính toán traffic rate theo giờ (giữ nguyên công thức)
-calculate_hourly_rate() {
-    local hour=$1                                        #lấy đối số thứ nhất khi gọi hàm để xác định hiện tại là mấy giờ, lưu vào biến hour (0-23)
-    local base_rate=50000                                #đây là mức base packet gửi mỗi giây
-    local max_rate=90000                                 #đây là mức maximum packet gửi mỗi giây
-    
-    # Hàm T(t) - Traffic pattern theo giờ (giữ nguyên), tách thành các hàm toán học nhỏ, mô tả peak và valley của đồ thị.
-    # Thứ tự: Hàm Gaussian, center ở 9h sáng với mức max = 25 units, tiếp theo là tối, peak ở 20h, max = 45 units, tiếp đó là hàm có giá trị âm, mô tả night drop, là vùng valley
-    local morning_peak=$(echo "scale=6; 25 * e(-1 * (($hour - 9) ^ 2) / 6.25)" | bc -l) 
-    local evening_peak=$(echo "scale=6; 45 * e(-1 * (($hour - 20) ^ 2) / 7.84)" | bc -l)
-    local night_drop=$(echo "scale=6; -15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)" | bc -l)
-    local daily_cycle=$(echo "scale=6; 5 * s(3.14159 * $hour / 12 - 3.14159/2)" | bc -l)
-    local base_level=20000                                #mức cộng thêm để tránh giá trị âm
-    
-    local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)                    #tổng chính là hệ số traffic cho giờ đó
-    local pps=$(echo "scale=0; if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)     #  
-    
-    # Sửa lỗi: sử dụng bc cho phép so sánh số thực
-    local is_less_than_5=$(echo "$pps < 5" | bc -l)
-    if [ "$is_less_than_5" -eq 1 ]; then
-        pps=5
+# Validation functions
+# Check IP, phải nhỏ hơn 255
+validate_ip() {
+    local ip="$1"
+    if [[ ! $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        log_error "Invalid IP address: $ip"
+        return 1
     fi
     
+    IFS='.' read -ra ADDR <<< "$ip"
+    for i in "${ADDR[@]}"; do
+        if [[ $i -gt 255 ]]; then
+            log_error "Invalid IP address: $ip"
+            return 1
+        fi
+    done
+    return 0
+}
+
+#Check xem network interface name có chính xác không
+validate_interface() {
+    local iface="$1"
+    if ! ip link show "$iface" &>/dev/null; then
+        log_error "Interface $iface not found"
+        return 1
+    fi
+    return 0
+}
+
+# Check số nguyên dương
+validate_numeric() {
+    local value="$1"
+    local name="$2"
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        log_error "$name must be a positive integer: $value"
+        return 1
+    fi
+    return 0
+}
+
+# Math helper functions với cache, sử dụng để lưu cặp key  -value, phép toán - kết quả
+declare -A MATH_CACHE=()
+
+cached_bc() {
+    local expr="$1"
+    local precision="${2:-6}"
+    local cache_key="${expr}_${precision}"
+    
+    if [[ -n "${MATH_CACHE[$cache_key]:-}" ]]; then
+        echo "${MATH_CACHE[$cache_key]}"
+        return
+    fi
+    
+    local result=$(echo "scale=$precision; $expr" | bc -l 2>/dev/null || echo "0")
+    MATH_CACHE[$cache_key]="$result"
+    echo "$result"
+}
+
+# Pre-calculate constants
+readonly PI="3.14159265359"
+readonly E="2.71828182846"
+
+# Optimized time calculation functions, gộp gọn vào thành 1 hàm so với bản cũ
+get_virtual_time() {
+    local elapsed_seconds="$1"
+    local virtual_seconds=$(cached_bc "$elapsed_seconds * $TIME_COMPRESSION" 0)
+    
+    local hours=$(( (virtual_seconds / 3600) % 24 ))
+    local minutes=$(( (virtual_seconds % 3600) / 60 ))
+    local days=$(( (virtual_seconds / 86400) % 7 + 1 ))
+    
+    printf "%d %d %d" "$hours" "$minutes" "$days"
+}
+
+# Optimized traffic calculation với lookup table cho common values
+declare -A HOURLY_RATE_CACHE=()
+
+calculate_hourly_rate() {
+    local hour="$1"
+    
+    # Check cache first
+    if [[ -n "${HOURLY_RATE_CACHE[$hour]:-}" ]]; then
+        echo "${HOURLY_RATE_CACHE[$hour]}"
+        return
+    fi
+    
+    local base_rate=50000
+    local max_rate=90000
+    
+    # Optimized mathematical functions
+    local morning_peak=$(cached_bc "25 * e(-1 * (($hour - 9) ^ 2) / 6.25)")
+    local evening_peak=$(cached_bc "45 * e(-1 * (($hour - 20) ^ 2) / 7.84)")
+    local night_drop=$(cached_bc "-15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)")
+    local daily_cycle=$(cached_bc "5 * s($PI * $hour / 12 - $PI/2)")
+    
+    local traffic_factor=$(cached_bc "20000 + $morning_peak + $evening_peak + $night_drop + $daily_cycle")
+    local pps=$(cached_bc "if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" 0)
+    
+    # Cache result
+    HOURLY_RATE_CACHE[$hour]="$pps"
     echo "$pps"
 }
 
-# Hàm tính toán traffic rate theo ngày trong tuần (giữ nguyên)
+# Weekly multiplier với cache
+declare -A WEEKLY_CACHE=()
+
 calculate_weekly_multiplier() {
-    local day_of_week=$1								#đầu vào đại diện một ngày trong tuần
-    local base=87										#mức base traffic
-    local sine_component=$(echo "scale=6; 8 * s(2 * 3.14159 * $day_of_week / 7 + 3.14159/7)" | bc -l)		#Hàm sin với chu kỳ 7 ngày, mô phỏng dao động trong 1 tuần
-    local weekend_spike=$(echo "scale=6; 5 * e(-1 * (($day_of_week - 6) ^ 2) / 2.25)" | bc -l)				#Spike vào thứ 7, theo nghiên cứu
-    local weekly_factor=$(echo "scale=6; ($base + $sine_component + $weekend_spike) / $base" | bc -l)		#Chia cho base để tìm mức tăng, mô phỏng rõ sự khác nhau về tải giữa các ngày trong tuần
+    local day="$1"
     
+    if [[ -n "${WEEKLY_CACHE[$day]:-}" ]]; then
+        echo "${WEEKLY_CACHE[$day]}"
+        return
+    fi
+    
+    local base=87
+    local sine_component=$(cached_bc "8 * s(2 * $PI * $day / 7 + $PI/7)")
+    local weekend_spike=$(cached_bc "5 * e(-1 * (($day - 6) ^ 2) / 2.25)")
+    local weekly_factor=$(cached_bc "($base + $sine_component + $weekend_spike) / $base")
+    
+    WEEKLY_CACHE[$day]="$weekly_factor"
     echo "$weekly_factor"
 }
 
-# Hàm mô phỏng minute pattern với time compression
-get_compressed_minute_in_hour() {
-    local elapsed_seconds=$1
-    local compression_factor=$TIME_COMPRESSION
+# Optimized hping3 execution với connection pooling concept
+run_hping3_optimized() {
+    local target="$1"
+    local rate="$2" 
+    local duration="$3"
     
-    # Tính phút trong giờ hiện tại
-    local virtual_seconds=$(echo "scale=6; $elapsed_seconds * $compression_factor" | bc -l)
-    local seconds_in_hour=$(echo "scale=0; $virtual_seconds % 3600" | bc -l)
-    local minute_in_hour=$(echo "scale=0; $seconds_in_hour / 60" | bc -l)
+    # Validate and sanitize rate
+    local rate_int=$(cached_bc "$rate" 0)
+    rate_int=${rate_int%.*}  # Remove decimal part
+    [[ $rate_int -lt 1 ]] && rate_int=1
+    [[ $rate_int -gt 100000 ]] && rate_int=100000  # Rate limit
     
-    echo "$minute_in_hour"
-}
-
-# Hàm tạo pattern với time compression, sẽ mô phỏng chính xác hành vi, thói quen sử dụng mạng của con người
-generate_compressed_pattern() {
-    local duration_seconds=$1                                #lấy đối số đầu tiên khi gọi hàm làm giá trị cho biến, biến này để xác định thời gian thực chạy hàm
-    local compression_factor=$TIME_COMPRESSION               #hệ số nén thời gian
+    local interval_us=$(cached_bc "1000000 / $rate_int" 0)
+    local total_packets=$(cached_bc "$rate_int * $duration" 0)
+    [[ ${total_packets%.*} -lt 1 ]] && total_packets=1
     
-    log "=== TIME COMPRESSION SIMULATION ==="
-    log "Compression factor: ${compression_factor}x"
-    log "Real duration: ${duration_seconds}s = Virtual duration: $(echo "scale=1; $duration_seconds * $compression_factor / 3600" | bc -l) hours"        #in ra màn hình số giờ ảo tương ứng với duration thực và hệ số nén
-    log "Virtual speed: 1 real second = $(echo "scale=1; $compression_factor / 60" | bc -l) virtual minutes"                                             #quy đổi 1 giây thực ra phút ảo
+    log_debug "hping3: ${rate_int}pps for ${duration}s (${total_packets} packets)"
     
-    local update_interval=5  # Update mỗi 5 seconds
-    local current_time=0     # Đặt thời gian lúc bắt đầu chạy là 0
-    
-    while [ $current_time -lt $duration_seconds ]; do            # Lặp liên tục nếu thời gian chạy hiện tại < duration time đầu vào
-        # Tính toán thời gian ảo
-        # Luồng hoạt động sau mỗi lần lặp:
-        #    1. Tính toán thời gian hiện tại trên đồng hồ ảo, đang là mấy giờ, mấy phút, ngày nào trong tuần.
-        #    2. Dựa trên các công thức toán học, tính rate gửi traffic theo giờ hiện tại và theo ngày trong tuần.
-        #    3. Kết hợp các factor, thêm nhiếu để tăng độ tương thích với hành vi thực, sau đó làm tròn rate dưới dạng số nguyên.
-        #    4. Chạy công cụ hping3 với rate này.
-        #    5. Đợi hết thời gian interval rồi kill các tiến trình hping3 đang chạy, sau đó lặp lại cho đến hết chu kì.
-        local virtual_hour=$(get_compressed_hour $current_time)
-        local virtual_day=$(get_compressed_day $current_time)
-        local virtual_minute=$(get_compressed_minute_in_hour $current_time)
-        
-        # Tính toán rate dựa trên các hàm pattern
-        local hourly_rate=$(calculate_hourly_rate $virtual_hour)
-        local weekly_multiplier=$(calculate_weekly_multiplier $virtual_day)
-        
-        # Thêm minute variation, factor này sẽ dao động trong khoảng [0,7-1,3] để tạo thêm dao động theo phút trong vòng 1 tiếng, traffic thực không thể chỉ nằm ngang suốt 1 tiếng
-        local minute_factor=$(echo "scale=6; 1 + 0.3 * s(2 * 3.14159 * $virtual_minute / 60)" | bc -l)
-        
-        # Kết hợp các factor
-        local base_rate=$(echo "scale=6; $hourly_rate * $weekly_multiplier * $minute_factor" | bc -l)
-        
-        # Thêm nhiễu ngẫu nhiên ±20%
-        local noise=$(echo "scale=6; (($RANDOM % 80) - 100) / 500" | bc -l)
-        local final_rate_float=$(echo "scale=6; $base_rate * (1 + $noise)" | bc -l)
-        
-        # Chuyển về số nguyên và đảm bảo rate tối thiểu
-        local final_rate=$(echo "scale=0; if($final_rate_float < 1) 1 else ($final_rate_float + 0.5) / 1" | bc -l)
-        
-        # Đảm bảo final_rate là số nguyên dương
-        if [ -z "$final_rate" ] || [ "$final_rate" -lt 1 ]; then
-            final_rate=1
-        fi
-        
-        # Log với thông tin virtual time
-        log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | Rate: ${final_rate}pps"
-        
-        # Chạy hping3 với rate này
-        run_hping3_burst "$TARGET_IP" "$final_rate" "$update_interval" &        #ký hiệu $ giúp chạy tiến trình hping3 ở chế độ background, sau đó lưu id của tiến trình này
-        local hping_pid=$!                                                      #thao tác này sẽ giúp việc tiến trình vẫn chạy kể cả có lệnh sleep bên dưới, tránh việc tần suất bị gián
-                                                                                #đoạn khi phải on off process liên tục
-        
-        # Đợi interval
-        sleep $update_interval
-        
-        # Cleanup, kill process
-        if kill -0 $hping_pid 2>/dev/null; then
-            kill $hping_pid
-            wait $hping_pid 2>/dev/null
-        fi
-        
-        current_time=$((current_time + update_interval))
-    done
-}
-
-# Hàm tạo Yo-Yo pattern (Bot/Automated behavior), mô phỏng các pattern phổ biến
-generate_yoyo_pattern() {
-    local duration_seconds=$1
-    local yoyo_type="${2:-square}"  # square, sawtooth, sine, random
-    
-    log "=== YO-YO PATTERN SIMULATION ==="
-    log "Type: $yoyo_type | Duration: ${duration_seconds}s"
-    log "Simulating bot/automated traffic behavior"
-    
-    local update_interval=2  # Cập nhật mỗi 2 giây cho pattern nhanh
-    local current_time=0
-    local cycle_duration=20  # Chu kỳ yo-yo mỗi 20 giây
-    
-    while [ $current_time -lt $duration_seconds ]; do
-        local cycle_position=$(echo "scale=6; ($current_time % $cycle_duration) / $cycle_duration" | bc -l)
-        local rate=10000  # Base rate
-        
-        case "$yoyo_type" in
-            "square")
-                # Pattern vuông: HIGH-LOW-HIGH-LOW
-                local is_first_half=$(echo "$cycle_position < 0.5" | bc -l)
-                if [ "$is_first_half" -eq 1 ]; then
-                    rate=100000  # HIGH phase
-                else
-                    rate=10000   # LOW phase
-                fi
-                ;;
-            "sawtooth")
-                # Pattern răng cưa: tăng dần rồi drop xuống
-                local is_ramp_phase=$(echo "$cycle_position < 0.8" | bc -l)
-                if [ "$is_ramp_phase" -eq 1 ]; then
-                    local rate_float=$(echo "scale=6; 10 + 90 * $cycle_position / 0.8" | bc -l)
-                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)
-                else
-                    rate=10  # Sharp drop
-                fi
-                ;;
-            "sine")
-                # Pattern sin: lên xuống mềm mại
-                local rate_float=$(echo "scale=6; 50 + 45 * s(2 * 3.14159 * $cycle_position)" | bc -l)
-                rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)
-                ;;
-            "random")
-                # Pattern ngẫu nhiên nhưng có chu kỳ
-                local random_factor=$(echo "scale=6; ($RANDOM % 1000) / 1000" | bc -l)
-                local is_high_phase=$(echo "$cycle_position < 0.3" | bc -l)
-                local is_med_phase=$(echo "$cycle_position < 0.7" | bc -l)
-                
-                if [ "$is_high_phase" -eq 1 ]; then
-                    local rate_float=$(echo "scale=6; 80 + 20 * $random_factor" | bc -l)
-                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)  # HIGH
-                elif [ "$is_med_phase" -eq 1 ]; then
-                    local rate_float=$(echo "scale=6; 40 + 30 * $random_factor" | bc -l)
-                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)  # MED
-                else
-                    local rate_float=$(echo "scale=6; 5 + 15 * $random_factor" | bc -l)
-                    rate=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)   # LOW
-                fi
-                ;;
-            "burst")
-                # Pattern burst: im lặng rồi bùng nổ
-                local is_burst_phase=$(echo "$cycle_position < 0.1" | bc -l)
-                local is_cooldown_phase=$(echo "$cycle_position < 0.2" | bc -l)
-                
-                if [ "$is_burst_phase" -eq 1 ]; then
-                    rate=100000  # Massive burst
-                elif [ "$is_cooldown_phase" -eq 1 ]; then
-                    rate=50000  # Cool down
-                else
-                    rate=10000    # Silent period
-                fi
-                ;;
-            "step")
-                # Pattern step: tăng từng bước
-                local is_step1=$(echo "$cycle_position < 0.25" | bc -l)
-                local is_step2=$(echo "$cycle_position < 0.5" | bc -l)
-                local is_step3=$(echo "$cycle_position < 0.75" | bc -l)
-                
-                if [ "$is_step1" -eq 1 ]; then
-                    rate=20000
-                elif [ "$is_step2" -eq 1 ]; then
-                    rate=50000
-                elif [ "$is_step3" -eq 1 ]; then
-                    rate=80000
-                else
-                    rate=100000
-                fi
-                ;;
-        esac
-        
-        # Đảm bảo rate minimum và là số nguyên
-        if [ -z "$rate" ] || [ "$rate" -lt 1 ]; then
-            rate=1
-        fi
-        
-        log "T+${current_time}s | Cycle: $(printf "%.2f" $cycle_position) | Rate: ${rate}pps [$yoyo_type]"
-        
-        # Chạy hping3
-        run_hping3_burst "$TARGET_IP" "$rate" "$update_interval" &
-        local hping_pid=$!
-        
-        sleep $update_interval
-        
-        # Cleanup
-        if kill -0 $hping_pid 2>/dev/null; then
-            kill $hping_pid
-            wait $hping_pid 2>/dev/null
-        fi
-        
-        current_time=$((current_time + update_interval))
-    done
-}
-
-# Hàm demo các Yo-Yo patterns, sử dụng cho user mới không biết nên sử dụng pattern nào
-demo_yoyo_patterns() {
-    log "=== YO-YO PATTERNS DEMO ==="
-    
-    local demo_duration=60  # Mỗi pattern chạy 1 phút
-    
-    log "Demo 1: Square Wave Pattern (Bot-like)"
-    generate_yoyo_pattern $demo_duration "square"
-    sleep 5
-    
-    log "Demo 2: Sawtooth Pattern (Ramp-up attacks)"  
-    generate_yoyo_pattern $demo_duration "sawtooth"
-    sleep 5
-    
-    log "Demo 3: Burst Pattern (Flash crowds)"
-    generate_yoyo_pattern $demo_duration "burst"
-    sleep 5
-    
-    log "Demo 4: Step Pattern (Gradual scaling)"
-    generate_yoyo_pattern $demo_duration "step"
-    sleep 5
-    
-    log "Demo 5: Random Yo-Yo (Chaotic bots)"
-    generate_yoyo_pattern $demo_duration "random"
-}
-
-# Hàm demo các compression level khác nhau
-demo_compression_levels() {
-    log "=== COMPRESSION DEMO ==="
-    
-    # 1 phút = 1 ngày (1440x compression)
-    log "Demo 1: 60 seconds = 24 virtual hours (1440x compression)"
-    generate_compressed_pattern 60
-    
-    sleep 10
-    
-    # 2 phút = 1 tuần (5040x compression) 
-    log "Demo 2: 120 seconds = 7 virtual days (5040x compression)"
-    TIME_COMPRESSION=5040 generate_compressed_pattern 120
-    
-    sleep 10
-    
-    # 5 phút = 1 tuần (2016x compression)
-    log "Demo 3: 300 seconds = 7 virtual days (2016x compression)"
-    TIME_COMPRESSION=2016 generate_compressed_pattern 300
-}
-
-# Hàm chạy hping3, hiện tại chưa tối ưu
-run_hping3_burst() {
-    local target=$1
-    local rate=$2
-    local duration=$3
-    
-    # Đảm bảo rate là số nguyên
-    local rate_int=$(echo "scale=0; $rate / 1" | bc -l)
-    
-    local interval_us=$(echo "scale=0; 1000000 / $rate_int" | bc -l)
-    
-    # Tính tổng số packet cần gửi bằng bc
-    local total_packets=$(echo "scale=0; $rate_int * $duration" | bc -l)
-    
-    if [ "$VERBOSE" = true ]; then
-        echo "  -> hping3 rate: ${rate_int}pps for ${duration}s (total: ${total_packets} packets)"
-    fi
-    
-    # Đảm bảo total_packets ít nhất là 1
-    if [ "$total_packets" -lt 1 ]; then
-        total_packets=1
-    fi
-    
-    hping3 \
-        -S \
-        -p 80 \
-        -i "u$interval_us" \
-        -c "$total_packets" \
+    # Use timeout để tránh hanging
+    timeout "$duration" hping3 \
+        -S -p 80 \
+        -i "u${interval_us%.*}" \
+        -c "${total_packets%.*}" \
         --interface "$INTERFACE" \
         "$target" \
-        >> "$LOG_FILE" 2>&1 || true
+        >>"$LOG_FILE" 2>&1 &
+    
+    local pid=$!
+    BACKGROUND_PIDS+=($pid)
+    echo "$pid"
 }
 
-# Hàm kiểm tra dependencies
+# Pattern generators với optimized loops
+generate_compressed_pattern() {
+    local duration_seconds="$1"
+    
+    log "=== TIME COMPRESSION SIMULATION ==="
+    log "Compression: ${TIME_COMPRESSION}x | Duration: ${duration_seconds}s"
+    log "Virtual time: $(cached_bc "$duration_seconds * $TIME_COMPRESSION / 3600" 1)h"
+    
+    local update_interval=5
+    local current_time=0
+    local pids_to_cleanup=()
+    
+    while [[ $current_time -lt $duration_seconds ]]; do
+        # Get virtual time components
+        read -r virtual_hour virtual_minute virtual_day <<< "$(get_virtual_time $current_time)"
+        
+        # Calculate rates
+        local hourly_rate=$(calculate_hourly_rate "$virtual_hour")
+        local weekly_multiplier=$(calculate_weekly_multiplier "$virtual_day")
+        local minute_factor=$(cached_bc "1 + 0.3 * s(2 * $PI * $virtual_minute / 60)")
+        
+        # Combine factors with optimized calculation
+        local base_rate=$(cached_bc "$hourly_rate * $weekly_multiplier * $minute_factor")
+        local noise=$(cached_bc "(($RANDOM % 40) - 20) / 100")
+        local final_rate=$(cached_bc "($base_rate * (1 + $noise))" 0)
+        
+        # Ensure minimum rate
+        final_rate=${final_rate%.*}
+        [[ $final_rate -lt 1 ]] && final_rate=1
+        
+        # Progress indicator
+        local progress=$(cached_bc "$current_time * 100 / $duration_seconds" 0)
+        log "Progress: ${progress%.*}% | T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" "$virtual_minute") | Rate: ${final_rate}pps"
+        
+        # Run hping3
+        local hping_pid=$(run_hping3_optimized "$TARGET_IP" "$final_rate" "$update_interval")
+        pids_to_cleanup+=($hping_pid)
+        
+        # Cleanup old processes (keep array size manageable)
+        if [[ ${#pids_to_cleanup[@]} -gt 10 ]]; then
+            for old_pid in "${pids_to_cleanup[@]:0:5}"; do
+                kill "$old_pid" 2>/dev/null || true
+            done
+            pids_to_cleanup=("${pids_to_cleanup[@]:5}")
+        fi
+        
+        sleep "$update_interval"
+        current_time=$((current_time + update_interval))
+    done
+    
+    # Final cleanup
+    for pid in "${pids_to_cleanup[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+}
+
+# Optimized Yo-Yo patterns với function pointer concept, tăng tính mở rộng, bảo trì
+declare -A YOYO_PATTERNS=(
+    ["square"]="yoyo_square"
+    ["sawtooth"]="yoyo_sawtooth"
+    ["sine"]="yoyo_sine"
+    ["burst"]="yoyo_burst"
+    ["step"]="yoyo_step"
+    ["random"]="yoyo_random"
+)
+
+yoyo_square() {
+    local cycle_pos="$1"
+    local is_first_half=$(cached_bc "$cycle_pos < 0.5" 0)
+    [[ ${is_first_half%.*} -eq 1 ]] && echo "80" || echo "20"
+}
+
+yoyo_sawtooth() {
+    local cycle_pos="$1"
+    local is_ramp=$(cached_bc "$cycle_pos < 0.8" 0)
+    if [[ ${is_ramp%.*} -eq 1 ]]; then
+        cached_bc "10 + 90 * $cycle_pos / 0.8" 0
+    else
+        echo "10"
+    fi
+}
+
+yoyo_sine() {
+    local cycle_pos="$1"
+    cached_bc "50 + 45 * s(2 * $PI * $cycle_pos)" 0
+}
+
+yoyo_burst() {
+    local cycle_pos="$1"
+    local is_burst=$(cached_bc "$cycle_pos < 0.1" 0)
+    local is_cooldown=$(cached_bc "$cycle_pos < 0.2" 0)
+    
+    if [[ ${is_burst%.*} -eq 1 ]]; then
+        echo "200"
+    elif [[ ${is_cooldown%.*} -eq 1 ]]; then
+        echo "50"
+    else
+        echo "5"
+    fi
+}
+
+yoyo_step() {
+    local cycle_pos="$1"
+    local step1=$(cached_bc "$cycle_pos < 0.25" 0)
+    local step2=$(cached_bc "$cycle_pos < 0.5" 0) 
+    local step3=$(cached_bc "$cycle_pos < 0.75" 0)
+    
+    if [[ ${step1%.*} -eq 1 ]]; then echo "20"
+    elif [[ ${step2%.*} -eq 1 ]]; then echo "50"
+    elif [[ ${step3%.*} -eq 1 ]]; then echo "80"
+    else echo "100"
+    fi
+}
+
+yoyo_random() {
+    local cycle_pos="$1"
+    local phase1=$(cached_bc "$cycle_pos < 0.3" 0)
+    local phase2=$(cached_bc "$cycle_pos < 0.7" 0)
+    local random_factor=$(cached_bc "($RANDOM % 50) / 100" 2)
+    
+    if [[ ${phase1%.*} -eq 1 ]]; then
+        cached_bc "80 + 20 * $random_factor" 0
+    elif [[ ${phase2%.*} -eq 1 ]]; then
+        cached_bc "40 + 30 * $random_factor" 0
+    else
+        cached_bc "5 + 15 * $random_factor" 0
+    fi
+}
+
+generate_yoyo_pattern() {
+    local duration_seconds="$1"
+    local yoyo_type="$2"
+    
+    # Validate pattern type
+    if [[ -z "${YOYO_PATTERNS[$yoyo_type]:-}" ]]; then
+        log_error "Unknown yo-yo pattern: $yoyo_type"
+        return 1
+    fi
+    
+    log "=== YO-YO PATTERN: $yoyo_type ==="
+    log "Duration: ${duration_seconds}s"
+    
+    local update_interval=2
+    local cycle_duration=20
+    local current_time=0
+    local pattern_func="${YOYO_PATTERNS[$yoyo_type]}"
+    
+    while [[ $current_time -lt $duration_seconds ]]; do
+        local cycle_position=$(cached_bc "($current_time % $cycle_duration) / $cycle_duration" 4)
+        local rate=$($pattern_func "$cycle_position")
+        rate=${rate%.*}
+        [[ $rate -lt 1 ]] && rate=1
+        
+        log "T+${current_time}s | Cycle: $(printf "%.2f" "$cycle_position") | Rate: ${rate}pps"
+        
+        local hping_pid=$(run_hping3_optimized "$TARGET_IP" "$rate" "$update_interval")
+        
+        sleep "$update_interval"
+        kill "$hping_pid" 2>/dev/null || true
+        
+        current_time=$((current_time + update_interval))
+    done
+}
+
+# Enhanced dependency check
 check_dependencies() {
-    local missing_deps=()
+    local deps=("hping3" "bc" "timeout" "ip" "pkill")
+    local missing=()
     
-    if ! command -v hping3 &> /dev/null; then
-        missing_deps+=("hping3")
-    fi
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &>/dev/null; then
+            missing+=("$dep")
+        fi
+    done
     
-    if ! command -v bc &> /dev/null; then
-        missing_deps+=("bc")
-    fi
-    
-    if [[ $EUID -ne 0 ]]; then
-        log "WARNING: Root privileges may be required for hping3"
-    fi
-    
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        log "ERROR: Missing dependencies: ${missing_deps[*]}"
-        log "Install with: apt-get install ${missing_deps[*]}"
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing dependencies: ${missing[*]}"
+        log "Install with: apt-get install ${missing[*]}"
         exit 1
     fi
+    
+    # Check permissions
+    if [[ $EUID -ne 0 ]]; then
+        log_warn "Root privileges recommended for hping3"
+    fi
+    
+    # Check if another instance is running
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        log_error "Another instance is already running (PID: $(cat "$PID_FILE"))"
+        exit 1
+    fi
+    
+    echo $$ > "$PID_FILE"
 }
 
-# Hàm hiển thị usage
+# Enhanced connectivity test
+test_connectivity() {
+    log "Testing connectivity to $TARGET_IP..."
+    
+    if ! timeout 5 ping -c 2 -W 2 "$TARGET_IP" &>/dev/null; then
+        log_warn "Target $TARGET_IP may not be reachable"
+        return 1
+    fi
+    
+    # Test interface
+    if ! timeout 3 ping -I "$INTERFACE" -c 1 -W 2 "$TARGET_IP" &>/dev/null; then
+        log_warn "Interface $INTERFACE may have connectivity issues"
+        return 1
+    fi
+    
+    log "Connectivity test passed"
+    return 0
+}
+
+# Performance monitoring
+monitor_performance() {
+    while true; do
+        local cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)
+        local mem_usage=$(free | grep '^Mem' | awk '{printf "%.1f", $3/$2 * 100.0}')
+        local hping_count=$(pgrep -c hping3 || echo 0)
+        
+        log_debug "Performance: CPU=${cpu_usage}% MEM=${mem_usage}% HPING_PROCS=${hping_count}"
+        sleep 30
+    done &
+    
+    BACKGROUND_PIDS+=($!)
+}
+
+# Enhanced usage display
 show_usage() {
-    cat << EOF
-Usage: $0 [TARGET_IP] [INTERFACE] [DURATION] [COMPRESSION] [MODE]
+    cat << 'EOF'
+HPING3 Traffic Simulator - Optimized Version
+
+USAGE:
+    ./script.sh [TARGET] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
 
 PARAMETERS:
-    TARGET_IP     - Target IP (default: 8.8.8.8)
-    INTERFACE     - Network interface (default: eth0) 
-    DURATION      - Real duration in seconds (default: 300)
-    COMPRESSION   - Time compression factor (default: 72)
-    MODE          - Simulation mode (default: compressed)
-    YOYO_TYPE     - Yo-yo pattern type (for yoyo mode)
+    TARGET       Target IP address (default: 8.8.8.8)
+    INTERFACE    Network interface (auto-detect if not specified)
+    DURATION     Duration in seconds (default: 300)
+    COMPRESSION  Time compression factor (default: 72)
+    MODE         Simulation mode (compressed|yoyo|demo|yoyo-demo)
+    YOYO_TYPE    Pattern type for yoyo mode (square|sawtooth|sine|burst|step|random)
 
-COMPRESSION EXAMPLES:
-    72   = 1 real hour in 50 seconds  (5 min = 6 hours)
-    144  = 1 real hour in 25 seconds  (5 min = 12 hours)  
-    288  = 1 real hour in 12.5 seconds (5 min = 24 hours)
-    2016 = 1 real week in 5 minutes   (5 min = 7 days)
+EXAMPLES:
+    # Standard compressed simulation (5 min = 6 virtual hours)
+    ./script.sh 192.168.1.1 eth0 300 72 compressed
     
-YO-YO EXAMPLES:
-    $0 8.8.8.8 eth0 300 1 yoyo square     # Square wave pattern
-    $0 8.8.8.8 eth0 180 1 yoyo burst      # Burst attack pattern  
-    $0 8.8.8.8 eth0 240 1 yoyo sawtooth   # Ramp-up pattern
-    $0 8.8.8.8 eth0 300 1 yoyo-demo       # All yo-yo patterns
-
-MODES:
-    compressed = Time-compressed realistic pattern
-    demo       = Show multiple compression levels
-    yoyo       = Yo-yo/bot-like patterns
-    yoyo-demo  = Demo all yo-yo pattern types
-
-YO-YO PATTERN TYPES:
-    square     = HIGH-LOW-HIGH-LOW (typical bot)
-    sawtooth   = Gradual ramp up then sharp drop
-    sine       = Smooth up-down waves
-    burst      = Silent period then massive spike
-    step       = Gradual step-by-step increase
-    random     = Chaotic but cyclical
+    # Bot-like square wave pattern
+    ./script.sh 8.8.8.8 wlan0 180 1 yoyo square
     
-VIRTUAL TIME CALCULATION:
-    Virtual seconds = Real seconds × Compression factor
-    1 real second = (Compression ÷ 60) virtual minutes
+    # Demo all yo-yo patterns
+    ./script.sh 1.1.1.1 eth0 600 1 yoyo-demo
+    
+    # Ultra-fast compression (5 min = 7 virtual days)
+    ./script.sh 8.8.8.8 eth0 300 2016 compressed
+
+ENVIRONMENT VARIABLES:
+    VERBOSE=true|false    Enable debug logging (default: true)
 EOF
 }
 
-# Main function
+# Main execution với error handling
 main() {
-    local mode="${5:-compressed}"
-    local yoyo_type="${6:-square}"
+    # Validate inputs
+    validate_ip "$TARGET_IP" || exit 1
+    validate_interface "$INTERFACE" || exit 1
+    validate_numeric "$DURATION" "Duration" || exit 1
+    validate_numeric "$TIME_COMPRESSION" "Compression" || exit 1
     
-    log "=== COMPRESSED HPING3 TRAFFIC SIMULATOR ==="
-    log "Target: $TARGET_IP"
-    log "Interface: $INTERFACE" 
-    log "Duration: ${DURATION}s"
-    log "Compression: ${TIME_COMPRESSION}x"
-    log "Mode: $mode"
-    if [[ "$mode" == "yoyo"* ]]; then
-        log "Yo-yo Type: $yoyo_type"
-    fi
+    log "=== OPTIMIZED HPING3 TRAFFIC SIMULATOR ==="
+    log "Target: $TARGET_IP | Interface: $INTERFACE"
+    log "Duration: ${DURATION}s | Compression: ${TIME_COMPRESSION}x | Mode: $MODE"
     
     check_dependencies
+    test_connectivity || log_warn "Proceeding despite connectivity issues"
     
-    # Test connectivity
-    if ! ping -c 1 -W 2 "$TARGET_IP" &>/dev/null; then
-        log "WARNING: Target $TARGET_IP may not be reachable"
-    fi
+    # Start performance monitoring in verbose mode
+    [[ "$VERBOSE" == true ]] && monitor_performance
     
-    case "$mode" in
+    # Execute based on mode
+    case "$MODE" in
         "compressed")
             generate_compressed_pattern "$DURATION"
             ;;
-        "demo")
-            demo_compression_levels
-            ;;
         "yoyo")
-            generate_yoyo_pattern "$DURATION" "$yoyo_type"
+            generate_yoyo_pattern "$DURATION" "$YOYO_TYPE"
             ;;
-        "yoyo-demo")
-            demo_yoyo_patterns
+        "demo"|"yoyo-demo")
+            log "Demo mode: Running multiple patterns..."
+            for pattern in square sawtooth burst step; do
+                log "Demo: $pattern pattern (60s)"
+                generate_yoyo_pattern 60 "$pattern"
+                sleep 5
+            done
             ;;
         *)
-            log "ERROR: Unknown mode: $mode"
+            log_error "Unknown mode: $MODE"
             show_usage
             exit 1
             ;;
     esac
     
-    log "=== SIMULATION COMPLETED ==="
-    log "Log file: $LOG_FILE"
+    log "=== SIMULATION COMPLETED SUCCESSFULLY ==="
 }
 
-# Xử lý command line
-if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    show_usage
-    exit 0
-fi
+# Command line processing
+case "${1:-}" in
+    -h|--help) show_usage; exit 0 ;;
+    -v|--version) echo "HPING3 Traffic Simulator v2.0 (Optimized)"; exit 0 ;;
+esac
 
 main "$@"
