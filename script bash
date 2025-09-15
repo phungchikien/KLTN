@@ -18,7 +18,7 @@ VERBOSE=true
 PACKET_SIZE=60          # bytes (typical SYN packet)
 BURST_SIZE="64k"        # Token bucket burst size
 LATENCY="200ms"         # Maximum latency for tokens
-MIN_RATE="1kbit"        # Minimum rate to avoid qdisc errors
+MIN_RATE="10kbit"        # Minimum rate to avoid qdisc errors
 MAX_RATE="1gbit"        # Maximum rate limit
 
 # PID của hping3 process
@@ -86,23 +86,23 @@ get_compressed_day() {
 # Hàm tính toán traffic rate theo giờ (giữ nguyên công thức)
 calculate_hourly_rate() {
     local hour=$1
-    local base_rate=50000
-    local max_rate=90000
+    local base_rate=1000        #base number of pps
+    local max_rate=9000         #max number of pps
     
     # Hàm T(t) - Traffic pattern theo giờ
     local morning_peak=$(echo "scale=6; 25 * e(-1 * (($hour - 9) ^ 2) / 6.25)" | bc -l) 
     local evening_peak=$(echo "scale=6; 45 * e(-1 * (($hour - 20) ^ 2) / 7.84)" | bc -l)
     local night_drop=$(echo "scale=6; -15 * e(-1 * (($hour - 2.5) ^ 2) / 3.24)" | bc -l)
     local daily_cycle=$(echo "scale=6; 5 * s(3.14159 * $hour / 12 - 3.14159/2)" | bc -l)
-    local base_level=20000
+    local base_level=20
     
     local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)
-    local pps=$(echo "scale=0; if($traffic_factor < 5) 5 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)
+    local pps=$(echo "scale=0; if($traffic_factor < 5) 800 else $base_rate + ($traffic_factor - 20) * ($max_rate - $base_rate) / 45" | bc -l)
     
-    # Đảm bảo minimum rate
+    # Đảm bảo minimum rate trong trường hợp bị lỗi phép toán
     local is_less_than_5=$(echo "$pps < 5" | bc -l)
     if [ "$is_less_than_5" -eq 1 ]; then
-        pps=5
+        pps=800
     fi
     
     echo "$pps"
