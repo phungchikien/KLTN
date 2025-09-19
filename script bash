@@ -96,7 +96,7 @@ calculate_hourly_rate() {
     local base_level=20
     
     local traffic_factor=$(echo "scale=6; $base_level + $morning_peak + $evening_peak + $night_drop + $daily_cycle" | bc -l)
-    local pps=$(echo "scale=0; if($traffic_factor < 5) 800 else $base_rate + ($traffic_factor - 20) * scale_factor" | bc -l)
+    local pps=$(echo "scale=0; if($traffic_factor < 5) 800 else ($traffic_factor - 20) * scale_factor" | bc -l)
     
     # Đảm bảo minimum rate trong trường hợp bị lỗi phép toán
     local is_less_than_5=$(echo "$pps < 5" | bc -l)
