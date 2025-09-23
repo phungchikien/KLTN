@@ -483,36 +483,75 @@ check_dependencies() {
 # Usage
 show_usage() {
     cat << EOF
-HPING3 TRAFFIC SIMULATOR WITH PYTHON MATH ENGINE
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    HPING3 TRAFFIC SIMULATOR WITH PYTHON                     ║
+║                           Math Engine v2.0                                  ║
+╚══════════════════════════════════════════════════════════════════════════════╝
 
-Usage: $0 [TARGET_IP] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
+USAGE:
+   $0 [TARGET_IP] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
+
+PARAMETERS:
+   TARGET_IP     : Target IP address (default: 8.8.8.8)
+   INTERFACE     : Network interface (default: eth0)
+   DURATION      : Test duration in seconds (default: 300)
+   COMPRESSION   : Time compression factor (default: 72)
+   MODE          : Traffic pattern mode
+   YOYO_TYPE     : Yo-yo pattern type (for yo-yo modes)
+
+AVAILABLE MODES:
+   python-compressed  - Python-enhanced compressed time simulation
+   python-yoyo       - Python-enhanced yo-yo patterns
+   tc-compressed     - TC qdisc compressed (legacy math)
+   tc-yoyo          - TC qdisc yo-yo (legacy math)
+
+YOYO PATTERN TYPES:
+   square      - Square wave: High/Low alternating pattern
+   sawtooth    - Ramp up gradually then sudden drop
+   burst       - Short high bursts with cooldown periods
 
 ENHANCED FEATURES:
-    ✓ Python3 mathematical engine for accurate calculations
-    ✓ Exponential, sine, cosine functions support
-    ✓ Complex traffic patterns with multiple peaks
-    ✓ TC qdisc optimization
-    ✓ Automatic fallback to simplified math
-
-MODES:
-    python-compressed  - Python-enhanced compressed time simulation
-    python-yoyo       - Python-enhanced yo-yo patterns
-    tc-compressed     - TC qdisc compressed (legacy math)
-    tc-yoyo          - TC qdisc yo-yo (legacy math)
-
-YOYO TYPES:
-    square      - Square wave pattern
-    sawtooth    - Ramp up then drop pattern  
-    burst       - Short bursts with cooldown
+   ✓ Python3 mathematical engine for accurate calculations
+   ✓ Exponential, sine, cosine functions support
+   ✓ Complex traffic patterns with multiple peaks
+   ✓ TC qdisc optimization for precise bandwidth control
+   ✓ Automatic fallback to simplified math if Python unavailable
+   ✓ Real-time logging and monitoring
+   ✓ Graceful cleanup on exit
 
 EXAMPLES:
-    $0 8.8.8.8 eth0 300 72 python-compressed
-    $0 8.8.8.8 eth0 180 1 python-yoyo burst
+   # Basic compressed time simulation (1 week in ~4 minutes)
+   $0 192.168.1.100 eth0 300 72 python-compressed
+   
+   # Yo-yo burst pattern for 3 minutes
+   $0 8.8.8.8 eth0 180 1 python-yoyo burst
+   
+   # Sawtooth pattern with custom compression
+   $0 10.0.0.1 wlan0 600 36 python-yoyo sawtooth
+   
+   # Square wave pattern for load testing
+   $0 192.168.1.1 eth1 120 1 python-yoyo square
 
 REQUIREMENTS:
-    - Root privileges
-    - Python3 with math module
-    - hping3, iproute2, bc packages
+   - Root privileges (sudo)
+   - Python3 with math module (recommended)
+   - hping3 package
+   - iproute2 package (tc command)
+   - bc calculator
+
+WARNINGS:
+   - This tool generates significant network traffic
+   - Use only on test networks or with proper authorization
+   - Monitor system resources during execution
+   - Ensure target systems can handle the traffic load
+
+LOGS:
+   All activity is logged to: hping3_traffic_python_YYYYMMDD_HHMMSS.log
+
+HELP & SUPPORT:
+   Run with -h, --help, or help for this guide
+   Check logs for detailed execution information
+   
 EOF
 }
 
