@@ -484,8 +484,8 @@ check_dependencies() {
 show_usage() {
     cat << EOF
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                    HPING3 TRAFFIC SIMULATOR WITH PYTHON                     ║
-║                           Math Engine v2.0                                  ║
+║                    HPING3 TRAFFIC SIMULATOR WITH PYTHON                      ║
+║                    Python-Enhanced Traffic Pattern Generator                 ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 USAGE:
@@ -495,62 +495,142 @@ PARAMETERS:
    TARGET_IP     : Target IP address (default: 8.8.8.8)
    INTERFACE     : Network interface (default: eth0)
    DURATION      : Test duration in seconds (default: 300)
-   COMPRESSION   : Time compression factor (default: 72)
-   MODE          : Traffic pattern mode
-   YOYO_TYPE     : Yo-yo pattern type (for yo-yo modes)
+   COMPRESSION   : Time compression factor (default: 72x)
+   MODE          : Traffic pattern mode (see below)
+   YOYO_TYPE     : Yo-yo pattern type (for python-yoyo mode only)
 
 AVAILABLE MODES:
-   python-compressed  - Python-enhanced compressed time simulation
-   python-yoyo       - Python-enhanced yo-yo patterns
-   tc-compressed     - TC qdisc compressed (legacy math)
-   tc-yoyo          - TC qdisc yo-yo (legacy math)
+   python-compressed  - Compressed time simulation with Python math engine
+                       ✓ Primary: Python mathematical functions (Gaussian, sine waves)
+                       ✓ Fallback: Simple bash calculations if Python fails
+                       ✓ Update interval: 3 seconds
+                       
+   python-yoyo       - Yo-yo pattern simulation with Python engine  
+                       ✓ Python-only: Advanced mathematical yo-yo patterns
+                       ✓ No fallback: Requires Python3 with math module
+                       ✓ Update interval: 2 seconds (faster)
 
-YOYO PATTERN TYPES:
-   square      - Square wave: High/Low alternating pattern
-   sawtooth    - Ramp up gradually then sudden drop
-   burst       - Short high bursts with cooldown periods
+YOYO PATTERN TYPES (for python-yoyo mode):
+   square      - Square wave pattern (High: 5000 PPS, Low: 500 PPS)
+                 └─ 50% high traffic, 50% low traffic per cycle
+                 
+   sawtooth    - Gradual ramp up then sudden drop
+                 └─ Linear increase 1000→10000 PPS (80%), then drop (20%)
+                 
+   burst       - Short bursts with cooldown periods
+                 └─ Burst: 5000 PPS (10%), Cooldown: 2500 PPS (10%), Idle: 1000 PPS (80%)
 
-ENHANCED FEATURES:
-   ✓ Python3 mathematical engine for accurate calculations
-   ✓ Exponential, sine, cosine functions support
-   ✓ Complex traffic patterns with multiple peaks
-   ✓ TC qdisc optimization for precise bandwidth control
-   ✓ Automatic fallback to simplified math if Python unavailable
-   ✓ Real-time logging and monitoring
-   ✓ Graceful cleanup on exit
+ARCHITECTURE OVERVIEW:
+   ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+   │  Python Engine  │───▶│  Traffic Pattern │───▶│   TC Qdisc      │
+   │  (Primary)      │    │   Calculation    │    │  (Bandwidth     │
+   │                 │    │                  │    │   Control)      │
+   │  Bash Fallback  │───▶│                  │    │                 │
+   │  (Backup)*      │    │                  │    │                 │
+   └─────────────────┘    └──────────────────┘    └─────────────────┘
+   
+   * Fallback chỉ available cho python-compressed mode
+
+PYTHON INTEGRATION FEATURES:
+   ✓ Mathematical precision with exp(), sin(), cos() functions
+   ✓ Gaussian curves for realistic morning/evening peaks
+   ✓ Sine wave daily cycles and weekly variations  
+   ✓ Complex multi-factor traffic modeling
+   ✓ Automatic fallback to bash arithmetic when Python unavailable
+   ✓ Real-time Python script generation (/tmp/traffic_calculator.py)
 
 EXAMPLES:
-   # Basic compressed time simulation (1 week in ~4 minutes)
+   # Basic compressed time simulation (1 week compressed to ~4 minutes)
+   # Uses Python math engine with fallback support
    $0 192.168.1.100 eth0 300 72 python-compressed
    
-   # Yo-yo burst pattern for 3 minutes
-   $0 8.8.8.8 eth0 180 1 python-yoyo burst
+   # Square wave yo-yo pattern for 3 minutes (Python-only)
+   # High/Low alternating every 10 seconds
+   $0 8.8.8.8 eth0 180 1 python-yoyo square
    
    # Sawtooth pattern with custom compression
+   # Gradual ramp up then sudden drop pattern  
    $0 10.0.0.1 wlan0 600 36 python-yoyo sawtooth
    
-   # Square wave pattern for load testing
-   $0 192.168.1.1 eth1 120 1 python-yoyo square
+   # Burst pattern for stress testing
+   # Short high bursts with long idle periods
+   $0 192.168.1.1 eth1 120 1 python-yoyo burst
+   
+   # Long compressed simulation (2 weeks in 10 minutes)
+   $0 203.0.113.1 eth0 600 144 python-compressed
 
-REQUIREMENTS:
+SYSTEM REQUIREMENTS:
+   REQUIRED:
    - Root privileges (sudo)
-   - Python3 with math module (recommended)
    - hping3 package
    - iproute2 package (tc command)
    - bc calculator
+   
+   RECOMMENDED (for full functionality):
+   - Python3 with math module
+     └─ Without Python: compressed mode uses simple fallback
+     └─ Without Python: yo-yo mode will fail
+   
+   NETWORK:
+   - Valid network interface
+   - Target should be reachable (optional)
+   - Sufficient bandwidth for traffic generation
 
-WARNINGS:
+EXECUTION FLOW:
+   1. Check dependencies (hping3, tc, bc, root)
+   2. Check Python availability (python3 + math module)  
+   3. Create Python calculator script (if Python available)
+   4. Initialize TC qdisc (Token Bucket Filter)
+   5. Start hping3 SYN flood (background process)
+   6. Main loop:
+      - Calculate traffic rate (Python primary, bash fallback)
+      - Convert PPS to bandwidth  
+      - Update TC qdisc rate
+      - Sleep and repeat
+   7. Cleanup on exit (kill hping3, remove qdisc, cleanup temp files)
+
+TRAFFIC PATTERNS EXPLAINED:
+   
+   COMPRESSED MODE:
+   - Simulates realistic daily/weekly traffic patterns
+   - Morning peak (~9 AM): Gaussian curve with moderate traffic
+   - Evening peak (~8 PM): Gaussian curve with higher traffic  
+   - Night dip (~2:30 AM): Reduced traffic period
+   - Weekend spike: Increased traffic on weekends
+   - Continuous variation: Minute-by-minute fluctuations
+   
+   YOYO MODES:
+   - Square: Abrupt high/low transitions for load balancer testing
+   - Sawtooth: Gradual scaling up for auto-scaling tests
+   - Burst: Short intensive periods for buffer overflow tests
+
+IMPORTANT WARNINGS:
    - This tool generates significant network traffic
    - Use only on test networks or with proper authorization
    - Monitor system resources during execution
    - Ensure target systems can handle the traffic load
+   - Stop immediately if network performance degrades
 
-LOGS:
-   All activity is logged to: hping3_traffic_python_YYYYMMDD_HHMMSS.log
+MONITORING & LOGS:
+   - All activity logged to: hping3_traffic_python_YYYYMMDD_HHMMSS.log
+   - Real-time status: [PYTHON] for math engine, [FALLBACK] for bash
+   - TC qdisc changes logged with timestamps
+   - Virtual time tracking for compressed mode
+   - Pattern cycle tracking for yo-yo mode
+
+TROUBLESHOOTING:
+   - "Python not available" → Install python3 or use fallback  
+   - "TC qdisc failed" → Check interface name and permissions
+   - "hping3 failed" → Install hping3 package
+   - "Target unreachable" → Check network connectivity (warning only)
 
 HELP & SUPPORT:
-   Run with -h, --help, or help for this guide
+   Run with: $0 -h, $0 --help, or $0 help
    Check logs for detailed execution information
+   
+VERSION INFO:
+   Python-Enhanced Traffic Simulator v2.0
+   Unified Architecture with Intelligent Fallback
    
 EOF
 }
