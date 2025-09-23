@@ -187,16 +187,16 @@ def calculate_yoyo_rate(elapsed_seconds, cycle_duration=20, yoyo_type="square"):
         return 5000 if cycle_position < 0.5 else 500
     elif yoyo_type == "sawtooth":
         if cycle_position < 0.8:
-            return int(10000 + 90000 * cycle_position / 0.8)
+            return int(1000 + 9000 * cycle_position / 0.8)
         else:
-            return 10000
+            return 1000
     elif yoyo_type == "burst":
         if cycle_position < 0.1:
-            return 2000
+            return 5000
         elif cycle_position < 0.2:
-            return 500
+            return 2500
         else:
-            return 50
+            return 1000
     else:
         return 5000
 
