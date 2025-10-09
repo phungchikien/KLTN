@@ -21,7 +21,7 @@ MIN_RATE="1kbit"
 MAX_RATE="1gbit"
 
 # Cấu hình Siege
-MAX_CONCURRENT=500
+MAX_CONCURRENT=50
 SIEGE_RC_FILE="/tmp/siege_custom_$(date +%s).rc"
 
 # PID và flags
