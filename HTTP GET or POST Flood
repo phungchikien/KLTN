@@ -14,7 +14,7 @@ TIME_COMPRESSION="${4:-72}"
 LOG_FILE="siege_http_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
-# Cấu hình TC QDISC (giống hping3 version)
+# Cấu hình TC QDISC
 BURST_SIZE="64k"
 LATENCY="200ms"
 MIN_RATE="1kbit"
@@ -94,7 +94,7 @@ check_python() {
     return 1
 }
 
-# Python calculator (GIỐNG HPING3 VERSION, chỉ đổi scale factor)
+# Python calculator
 create_python_calculator() {
     cat << 'PYTHON_SCRIPT' > /tmp/traffic_calculator.py
 #!/usr/bin/env python3
@@ -105,7 +105,6 @@ import os
 SCALE_FACTOR = int(os.environ.get('TRAFFIC_SCALE_FACTOR', '100'))
 
 def calculate_hourly_rate(hour, scale_factor=SCALE_FACTOR):
-    """Tính toán traffic rate theo giờ - GIỐNG HPING3"""
     morning_peak = 25 * math.exp(-((hour - 9) ** 2) / 6.25)
     evening_peak = 45 * math.exp(-((hour - 20) ** 2) / 7.84)
     night_drop = -15 * math.exp(-((hour - 2.5) ** 2) / 3.24)
@@ -113,12 +112,11 @@ def calculate_hourly_rate(hour, scale_factor=SCALE_FACTOR):
     base_level = 20
     
     traffic_factor = base_level + morning_peak + evening_peak + night_drop + daily_cycle
-    pps = max(300, traffic_factor * scale_factor)
+    rps = max(300, traffic_factor * scale_factor)
     
-    return int(pps)
+    return int(rps)
 
 def calculate_weekly_multiplier(day_of_week):
-    """Hệ số nhân theo tuần - GIỐNG HPING3"""
     base = 87
     sine_component = 8 * math.sin(2 * math.pi * day_of_week / 7 + math.pi/7)
     weekend_spike = 5 * math.exp(-((day_of_week - 6) ** 2) / 2.25)
@@ -126,11 +124,9 @@ def calculate_weekly_multiplier(day_of_week):
     return weekly_factor
 
 def calculate_minute_factor(minute_in_hour):
-    """Biến động theo phút - GIỐNG HPING3"""
     return 1 + 0.3 * math.sin(2 * math.pi * minute_in_hour / 60)
 
 def get_compressed_time(elapsed_seconds, compression_factor):
-    """Thời gian ảo - GIỐNG HPING3"""
     virtual_hours = elapsed_seconds * compression_factor / 3600
     current_hour = int(virtual_hours % 24)
     virtual_days = virtual_hours / 24
@@ -140,7 +136,6 @@ def get_compressed_time(elapsed_seconds, compression_factor):
     return current_hour, day_of_week, minute_in_hour
 
 def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.15):
-    """Tính toán PPS - GIỐNG HPING3"""
     try:
         hour, day, minute = get_compressed_time(elapsed_seconds, compression_factor)
         hourly_rate = calculate_hourly_rate(hour)
@@ -209,7 +204,7 @@ PYTHON_SCRIPT
     chmod +x /tmp/traffic_calculator.py
 }
 
-# Fallback math - GIỐNG HPING3
+# Fallback math
 calculate_simple_rate() {
     local hour=$1
     local day=$2
@@ -235,12 +230,14 @@ calculate_simple_rate() {
     echo "$final_rate"
 }
 
-# PPS to bandwidth - GIỐNG HPING3
-pps_to_bandwidth() {
-    local pps=$1
-    # HTTP request trung bình ~800 bytes (headers + small response)
-    local bytes_per_request=800
-    local bps=$(echo "scale=0; $pps * $bytes_per_request * 8" | bc -l)
+# RPS to bandwidth 
+rps_to_bandwidth() {
+    local rps=$1
+    # HTTP request trung bình 200 - 2000B trich tu  RFC 7230 (HTTP/1.1)
+    local avg_request_bytes=500      # Headers + small body
+    local avg_response_bytes=2048    # Typical response (2KB)
+    local bytes_per_transaction=$((avg_request_bytes + avg_response_bytes))
+    local bps=$(echo "scale=0; $rps * $bytes_per_request * 8" | bc -l)
     
     local min_bps=1000
     if [ $(echo "$bps < $min_bps" | bc -l) -eq 1 ]; then
@@ -261,7 +258,7 @@ pps_to_bandwidth() {
     fi
 }
 
-# TC qdisc init - GIỐNG HPING3
+# TC qdisc init 
 init_tc_qdisc() {
     log "Initializing TC qdisc on interface $INTERFACE"
     tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
@@ -276,7 +273,7 @@ init_tc_qdisc() {
     fi
 }
 
-# TC qdisc update - GIỐNG HPING3
+# TC qdisc update 
 update_tc_rate() {
     local new_rate="$1"
     
@@ -323,7 +320,7 @@ EOF
     log "Custom Siege RC created: $SIEGE_RC_FILE"
 }
 
-# Start Siege - CHẠY Ở MAX CAPACITY (giống hping3 --flood)
+# Start Siege - CHẠY Ở MAX CAPACITY 
 start_siege_flood() {
     log "Starting Siege HTTP flood to $TARGET_URL"
     log "Max concurrent users: $MAX_CONCURRENT"
@@ -333,6 +330,7 @@ start_siege_flood() {
         -R "$SIEGE_RC_FILE" \
         -c "$MAX_CONCURRENT" \
         -b \
+        -t "${DURATION}s" \
         "$TARGET_URL" \
         >> "$LOG_FILE" 2>&1 &
     
@@ -349,7 +347,6 @@ start_siege_flood() {
     fi
 }
 
-# Main pattern - GIỐNG HPING3 HOÀN TOÀN
 generate_compressed_pattern_python() {
     local duration_seconds=$1
     
@@ -383,22 +380,22 @@ generate_compressed_pattern_python() {
     while [ $current_time -lt $duration_seconds ]; do
         local python_output
         if python_output=$(python3 /tmp/traffic_calculator.py compressed $current_time $TIME_COMPRESSION 2>/dev/null); then
-            local final_pps=$(echo "$python_output" | awk '{print $1}')
+            local final_rps=$(echo "$python_output" | awk '{print $1}')
             local virtual_hour=$(echo "$python_output" | awk '{print $2}')
             local virtual_day=$(echo "$python_output" | awk '{print $3}')
             local virtual_minute=$(echo "$python_output" | awk '{print $4}')
             
-            local bandwidth=$(pps_to_bandwidth "$final_pps")
+            local bandwidth=$(rps_to_bandwidth "$final_rps")
             
             if [ "$bandwidth" != "$last_rate" ]; then
                 if update_tc_rate "$bandwidth"; then
-                    log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth} [PYTHON]"
+                    log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} [PYTHON]"
                     last_rate="$bandwidth"
                 else
                     log "T+${current_time}s | ERROR: Failed to update TC rate to $bandwidth"
                 fi
             elif [ "$VERBOSE" = true ]; then
-                log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth} [unchanged]"
+                log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} [unchanged]"
             fi
         else
             log "T+${current_time}s | ERROR: Python calculation failed, using fallback"
@@ -407,10 +404,10 @@ generate_compressed_pattern_python() {
             local minute=$(echo "scale=0; ($current_time * $TIME_COMPRESSION % 3600) / 60" | bc -l)
             
             local simple_rate=$(calculate_simple_rate $hour $day $minute)
-            local bandwidth=$(pps_to_bandwidth "$simple_rate")
+            local bandwidth=$(rps_to_bandwidth "$simple_rate")
             
             update_tc_rate "$bandwidth"
-            log "T+${current_time}s | Virtual: Day${day} ${hour}:$(printf "%02d" $minute) | PPS: ${simple_rate} | BW: ${bandwidth} [FALLBACK]"
+            log "T+${current_time}s | Virtual: Day${day} ${hour}:$(printf "%02d" $minute) | RPS: ${simple_rate} | BW: ${bandwidth} [FALLBACK]"
         fi
         
         sleep $update_interval
@@ -418,7 +415,7 @@ generate_compressed_pattern_python() {
     done
 }
 
-# Yo-yo pattern - GIỐNG HPING3
+# Yo-yo pattern
 generate_yoyo_pattern_python() {
     local duration_seconds=$1
     local yoyo_type="${2:-square}"
@@ -443,13 +440,13 @@ generate_yoyo_pattern_python() {
     while [ $current_time -lt $duration_seconds ]; do
         local python_output
         if python_output=$(python3 /tmp/traffic_calculator.py yoyo $current_time $yoyo_type 2>/dev/null); then
-            local pps=$(echo "$python_output" | awk '{print $1}')
+            local rps=$(echo "$python_output" | awk '{print $1}')
             local cycle_pos=$(echo "$python_output" | awk '{print $2}')
             
-            local bandwidth=$(pps_to_bandwidth "$pps")
+            local bandwidth=$(rps_to_bandwidth "$rps")
             
             if update_tc_rate "$bandwidth"; then
-                log "T+${current_time}s | Cycle: ${cycle_pos} | PPS: ${pps} | BW: ${bandwidth} [$yoyo_type-PYTHON]"
+                log "T+${current_time}s | Cycle: ${cycle_pos} | RPS: ${rps} | BW: ${bandwidth} [$yoyo_type-PYTHON]"
             else
                 log "T+${current_time}s | ERROR: Failed to update yo-yo rate to $bandwidth"
             fi
@@ -569,7 +566,7 @@ main() {
     local mode="${5:-python-compressed}"
     local yoyo_type="${6:-square}"
     
-    log "=== SIEGE HTTP FLOOD SIMULATOR (HPING3 ARCHITECTURE) ==="
+    log "=== SIEGE HTTP FLOOD SIMULATOR ==="
     log "Target URL: $TARGET_URL"
     log "Interface: $INTERFACE"
     log "Duration: ${DURATION}s"
