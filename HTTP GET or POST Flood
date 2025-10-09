@@ -237,7 +237,7 @@ rps_to_bandwidth() {
     local avg_request_bytes=500      # Headers + small body
     local avg_response_bytes=2048    # Typical response (2KB)
     local bytes_per_transaction=$((avg_request_bytes + avg_response_bytes))
-    local bps=$(echo "scale=0; $rps * $bytes_per_request * 8" | bc -l)
+    local bps=$(echo "scale=0; $rps * $bytes_per_transaction * 8" | bc -l)
     
     local min_bps=1000
     if [ $(echo "$bps < $min_bps" | bc -l) -eq 1 ]; then
