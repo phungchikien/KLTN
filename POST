@@ -329,9 +329,7 @@ start_siege_flood() {
         -R "$SIEGE_RC_FILE" \
         -c "$MAX_CONCURRENT" \
         -t "${DURATION}s" \
-        "$TARGET_URL" \
-        "POST" \
-        "username=admin&password=test" \
+        "${TARGET_URL} POST username=admin&password=test" \
         >> "$LOG_FILE" 2>&1 &
     
     SIEGE_PID=$!
