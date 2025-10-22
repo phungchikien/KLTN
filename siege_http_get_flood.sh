@@ -565,16 +565,8 @@ TRAFFIC PATTERNS:
    • Square:   5000 RPS ↔ 500 RPS (instant switch)
    • Sawtooth: 1000→10000 RPS (gradual), then drop
    • Burst:    10000→5000→2000 RPS (spike+decay)
-
-KEY DIFFERENCES FROM HPING3:
-   Protocol:     Layer 4 (TCP SYN)          →  Layer 7 (HTTP GET)
-   Packet type:  SYN packets (~64 bytes)    →  HTTP requests (~500 bytes)
-   Attack type:  SYN flood                  →  HTTP GET flood
-   Command:      hping3 -S --flood          →  siege -c ${MAX_CONCURRENT} -b
-   Target:       IP:Port                    →  Full URL with path
-   Impact:       Connection exhaustion      →  Application/bandwidth load
    
-IDENTICAL TO HPING3:
+FEATURES:
    ✓ TC qdisc bandwidth control architecture
    ✓ Python mathematical pattern calculations
    ✓ Compressed time simulation (72x default)
@@ -638,8 +630,6 @@ WARNING:
 LEGAL NOTICE:
    Unauthorized load testing may be illegal in your jurisdiction.
    Always obtain written permission before testing production systems.
-
-For more information on the original hping3 version, see the companion script.
 
 EOF
 }
