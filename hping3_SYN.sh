@@ -1,20 +1,18 @@
 #!/bin/bash
 
 # =================================================================
-# HPING3 TRAFFIC SIMULATOR WITH PYTHON MATH ENGINE
+#             SYN FLOOD FOR EDUCATIONAL PURPOSE
 # =================================================================
-# Sử dụng Python để tính toán các hàm toán học phức tạp
-# TC qdisc optimization với mathematical accuracy
 
-# Cấu hình mặc định
+# Default parameters
 TARGET_IP="${1:-8.8.8.8}"
 INTERFACE="${2:-eth0}"
 DURATION="${3:-300}"
-TIME_COMPRESSION="${4:-72}"
+TIME_COMPRESSION="${4:-288}"                        
 LOG_FILE="hping3_traffic_python_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
-# Cấu hình TC QDISC
+# TC QDISC config
 PACKET_SIZE=60
 BURST_SIZE="64k"
 LATENCY="200ms"
@@ -495,7 +493,7 @@ PARAMETERS:
    TARGET_IP     : Target IP address (default: 8.8.8.8)
    INTERFACE     : Network interface (default: eth0)
    DURATION      : Test duration in seconds (default: 300)
-   COMPRESSION   : Time compression factor (default: 72x)
+   COMPRESSION   : Time compression factor (default: 288x)
    MODE          : Traffic pattern mode (see below)
    YOYO_TYPE     : Yo-yo pattern type (for python-yoyo mode only)
 
@@ -539,7 +537,7 @@ PYTHON INTEGRATION FEATURES:
    ✓ Automatic fallback to bash arithmetic when Python unavailable
    ✓ Real-time Python script generation (/tmp/traffic_calculator.py)
 
-EXAMPLES:
+EXAMPLES - CHANGE EXAMPLE IP TO TARGET IP:
    # Basic compressed time simulation (1 week compressed to ~4 minutes)
    # Uses Python math engine with fallback support
    $0 192.168.1.100 eth0 300 72 python-compressed
