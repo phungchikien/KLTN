@@ -501,10 +501,10 @@ validate_url() {
 show_usage() {
     cat << EOF
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║         SIEGE HTTP POST FLOOD WITH TC QDISC CONTROL (HPING3 ARCHITECTURE)   ║
+║              SIEGE HTTP POST FLOOD WITH TC QDISC CONTROL                     ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-IDENTICAL ARCHITECTURE TO HPING3 VERSION:
+DESCRIPTION:
    1. Siege runs at MAXIMUM capacity (benchmark mode, ${MAX_CONCURRENT} concurrent)
    2. TC qdisc throttles bandwidth according to mathematical patterns
    3. Result: HTTP traffic follows realistic daily/weekly curves
@@ -514,7 +514,7 @@ USAGE:
 
 PARAMETERS:
    TARGET_URL    : Target URL (must include http:// or https://)
-                   Default: http://example.com
+                   Default: http://192.168.1.120/
                    Note: POST data automatically appended (name=test&email=test@example.com)
    INTERFACE     : Network interface to control bandwidth
                    Default: eth0
@@ -564,17 +564,8 @@ TRAFFIC PATTERNS:
    • Square:   5000 RPS ↔ 500 RPS (instant switch every 10s)
    • Sawtooth: 1000→10000 RPS (gradual 16s), then drop (4s)
    • Burst:    10000→5000→2000 RPS (spike 2s + decay 2s + sustain 16s)
-
-KEY DIFFERENCES FROM HPING3:
-   Protocol:     Layer 4 (TCP SYN)          →  Layer 7 (HTTP POST)
-   Packet type:  SYN packets (~64 bytes)    →  HTTP POST requests (~540 bytes)
-   Attack type:  SYN flood                  →  HTTP POST flood
-   Command:      hping3 -S --flood          →  siege -c ${MAX_CONCURRENT} -b
-   Target:       IP:Port                    →  Full URL with POST data
-   Impact:       Connection exhaustion      →  Application/bandwidth load
-   Data sent:    None                       →  POST: name=test&email=test@example.com
    
-IDENTICAL TO HPING3:
+FEATURE:
    ✓ TC qdisc bandwidth control architecture
    ✓ Python mathematical pattern calculations
    ✓ Compressed time simulation (72x default)
@@ -695,21 +686,6 @@ LEGAL NOTICE:
    
    Always obtain explicit written permission before testing production systems.
    This tool is intended for authorized penetration testing and capacity planning ONLY.
-
-COMPARISON WITH HPING3 VERSION:
-   This script is functionally equivalent to the hping3 version but operates at
-   Layer 7 (HTTP) instead of Layer 4 (TCP). Both use identical:
-   • TC qdisc control architecture
-   • Python mathematical models
-   • Compressed time simulation
-   • Logging and monitoring
-   
-   Choose hping3 for: TCP-level testing, connection exhaustion, SYN floods
-   Choose Siege for: HTTP-level testing, application load, POST floods
-
-For the companion hping3 SYN flood version with identical architecture,
-see: hping3_tc_flood_simulator.sh
-
 EOF
 }
 
