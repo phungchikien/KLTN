@@ -498,15 +498,14 @@ validate_url() {
     fi
 }
 
-# Usage
 show_usage() {
     cat << EOF
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║         SIEGE HTTP FLOOD WITH TC QDISC CONTROL (HPING3 ARCHITECTURE)        ║
+║         SIEGE HTTP POST FLOOD WITH TC QDISC CONTROL (HPING3 ARCHITECTURE)   ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 IDENTICAL ARCHITECTURE TO HPING3 VERSION:
-   1. Siege runs at MAXIMUM capacity (--benchmark, max concurrent)
+   1. Siege runs at MAXIMUM capacity (benchmark mode, ${MAX_CONCURRENT} concurrent)
    2. TC qdisc throttles bandwidth according to mathematical patterns
    3. Result: HTTP traffic follows realistic daily/weekly curves
 
@@ -515,46 +514,201 @@ USAGE:
 
 PARAMETERS:
    TARGET_URL    : Target URL (must include http:// or https://)
-   INTERFACE     : Network interface (default: eth0)
-   DURATION      : Test duration in seconds (default: 300)
-   COMPRESSION   : Time compression factor (default: 72x)
-   MODE          : python-compressed or python-yoyo
-   YOYO_TYPE     : square, sawtooth, or burst
+                   Default: http://example.com
+                   Note: POST data automatically appended (name=test&email=test@example.com)
+   INTERFACE     : Network interface to control bandwidth
+                   Default: eth0
+   DURATION      : Test duration in seconds
+                   Default: 300 (5 minutes)
+   COMPRESSION   : Time compression factor (1-1000)
+                   Default: 72 (1 second real = 72 seconds virtual)
+   MODE          : Simulation mode
+                   • python-compressed : Daily/weekly traffic patterns
+                   • python-yoyo       : Oscillating load patterns
+                   Default: python-compressed
+   YOYO_TYPE     : Type of yo-yo pattern (only for python-yoyo mode)
+                   • square    : Sharp on/off cycles (5000↔500 RPS)
+                   • sawtooth  : Gradual ramp up, sharp drop
+                   • burst     : Short intense bursts with quiet periods
+                   Default: square
 
 EXAMPLES:
-   # Compressed time simulation (same as hping3 version)
+   # Basic usage - compressed time with defaults
+   $0 http://192.168.1.100
+   
+   # Full parameters - compressed time simulation
    $0 http://192.168.1.100 eth0 300 72 python-compressed
    
-   # Yo-yo square wave
+   # Yo-yo square wave pattern
    $0 http://example.com eth0 180 1 python-yoyo square
    
-   # Long simulation
-   $0 https://api.example.com eth0 600 144 python-compressed
+   # Sawtooth pattern for 10 minutes
+   $0 http://api.test.local eth0 600 1 python-yoyo sawtooth
+   
+   # Long simulation - 1 hour real = 6 days virtual
+   $0 https://api.example.com eth0 3600 144 python-compressed
+   
+   # Quick test with minimal compression
+   $0 http://192.168.1.100 wlan0 60 10 python-compressed
+
+TRAFFIC PATTERNS:
+
+   Compressed Mode (Daily/Weekly Cycles):
+   • Morning peak: 08:00-10:00 (higher traffic)
+   • Evening peak: 19:00-21:00 (highest traffic)
+   • Night drop:   01:00-05:00 (lowest traffic)
+   • Weekend spike: Saturday-Sunday (+30%)
+   • Minute-level variations (±30%)
+   
+   Yo-Yo Mode (20-second cycles):
+   • Square:   5000 RPS ↔ 500 RPS (instant switch every 10s)
+   • Sawtooth: 1000→10000 RPS (gradual 16s), then drop (4s)
+   • Burst:    10000→5000→2000 RPS (spike 2s + decay 2s + sustain 16s)
 
 KEY DIFFERENCES FROM HPING3:
-   hping3 SYN flood        →  Siege HTTP GET flood
-   Layer 4 (TCP)           →  Layer 7 (HTTP)
-   SYN packets             →  Complete HTTP requests
-   -S --flood              →  -c $MAX_CONCURRENT -b
+   Protocol:     Layer 4 (TCP SYN)          →  Layer 7 (HTTP POST)
+   Packet type:  SYN packets (~64 bytes)    →  HTTP POST requests (~540 bytes)
+   Attack type:  SYN flood                  →  HTTP POST flood
+   Command:      hping3 -S --flood          →  siege -c ${MAX_CONCURRENT} -b
+   Target:       IP:Port                    →  Full URL with POST data
+   Impact:       Connection exhaustion      →  Application/bandwidth load
+   Data sent:    None                       →  POST: name=test&email=test@example.com
    
 IDENTICAL TO HPING3:
-   ✓ TC qdisc bandwidth control
-   ✓ Python mathematical patterns
-   ✓ Compressed time simulation
-   ✓ Yo-yo patterns
-   ✓ Gaussian curves for peaks
-   ✓ Weekly/daily cycles
-   ✓ Update intervals
-   ✓ Logging format
+   ✓ TC qdisc bandwidth control architecture
+   ✓ Python mathematical pattern calculations
+   ✓ Compressed time simulation (72x default)
+   ✓ Gaussian curves for peak modeling
+   ✓ Weekly/daily/hourly cycles
+   ✓ Yo-yo oscillating patterns
+   ✓ 1-second update intervals
+   ✓ Detailed logging format
+
+BANDWIDTH CALCULATION:
+   • Average HTTP POST request:  500 bytes (headers + POST body)
+   • Average HTTP POST response: 0 bytes (minimal/ignored for flood)
+   • Total per transaction: 500 bytes = 4000 bits
+   • Example: 5000 RPS = 5000 × 500 × 8 = 20 Mbps bandwidth
+   
+   The script calculates bandwidth as:
+   BW (bps) = RPS × avg_bytes_per_transaction × 8
+   
+   Note: Response size set to 0 because in flood mode we don't wait for responses.
+
+POST DATA STRUCTURE:
+   Automatically appended to each request:
+   • Content-Type: application/x-www-form-urlencoded
+   • POST Body: name=test&email=test@example.com
+   • Total POST payload: ~40 bytes
+   • Total request size: ~500 bytes (headers + body)
+
+TC QDISC SETTINGS:
+   • Algorithm: Token Bucket Filter (TBF)
+   • Burst size: ${BURST_SIZE}
+   • Latency: ${LATENCY}
+   • Rate range: ${MIN_RATE} - ${MAX_RATE}
+   • Update interval: 1 second (compressed) / 5 seconds (yoyo)
+
+SIEGE CONFIGURATION:
+   • Protocol: HTTP/1.1
+   • Connection: close (new connection per request)
+   • Chunked encoding: enabled
+   • Cache: disabled
+   • Concurrent users: ${MAX_CONCURRENT}
+   • Benchmark mode: enabled (maximum speed)
+   • Delay between requests: 0.5s per user
+   • Timeout: 30s
+   • Max failures: 1024
 
 SYSTEM REQUIREMENTS:
-   - Root privileges (for TC qdisc)
-   - siege, bc, tc (iproute2)
-   - Python3 with math module (recommended)
-   - Valid network interface
+   Required:
+   • Root/sudo privileges (for TC qdisc manipulation)
+   • siege (HTTP load testing tool)
+   • bc (basic calculator for math operations)
+   • tc from iproute2 package (traffic control)
+   • Valid network interface with outbound connectivity
+   
+   Recommended:
+   • Python3 with math module (for accurate calculations)
+   • Sufficient bandwidth on interface
+   • Target system authorization
+
+OUTPUT FORMAT:
+   Real-time console logging with timestamps:
+   [YYYY-MM-DD HH:MM:SS] T+Xs | Virtual: DayN HH:MM | RPS: X | BW: Xmbit [PYTHON]
+   
+   Log file: siege_http_flood_YYYYMMDD_HHMMSS.log
+   Contains:
+   • All console output
+   • Siege internal logs
+   • Error messages
+   • Cleanup activities
+
+SAFETY FEATURES:
+   • Automatic cleanup on exit (Ctrl+C, SIGTERM)
+   • TC qdisc removal on termination
+   • Siege process cleanup (SIGTERM → SIGKILL after 2s)
+   • Failsafe: pkill -9 siege as last resort
+   • Temporary file removal (\$SIEGE_RC_FILE, traffic_calculator.py)
+   • Graceful shutdown handling via trap
+
+MONITORING:
+   During execution, you can monitor:
+   • Real-time bandwidth: tc -s qdisc show dev $INTERFACE
+   • Siege processes: ps aux | grep siege
+   • Network traffic: iftop -i $INTERFACE
+   • Connections: netstat -an | grep <TARGET_IP>
+
+TROUBLESHOOTING:
+   If Siege fails to start:
+   • Check if siege is installed: which siege
+   • Verify URL is reachable: curl -I <TARGET_URL>
+   • Check interface exists: ip link show $INTERFACE
+   
+   If TC qdisc fails:
+   • Ensure root privileges: sudo -v
+   • Check kernel modules: lsmod | grep sch_tbf
+   • Verify interface is up: ip link show $INTERFACE
 
 WARNING:
-   This generates significant HTTP traffic. Use only on authorized systems.
+   ⚠️  This script generates SIGNIFICANT HTTP POST traffic that can:
+      • Saturate network bandwidth (up to 2 Mbps per default settings)
+      • Overload target web servers with form submissions
+      • Fill server logs rapidly
+      • Trigger DDoS protection systems (Cloudflare, AWS Shield, etc.)
+      • Violate terms of service
+      • Cause data corruption if POST endpoints have side effects
+      
+   ✓ Use ONLY on systems you own or have explicit written authorization to test
+   ✓ Ensure target can handle the load or risk service disruption
+   ✓ Start with short duration (60s) and low compression (10x) first
+   ✓ Monitor target system resources during testing
+   ✓ Have a rollback plan if target becomes unresponsive
+
+LEGAL NOTICE:
+   Unauthorized load testing, stress testing, or DoS attacks are ILLEGAL in most
+   jurisdictions and may result in:
+   • Criminal prosecution under Computer Fraud and Abuse Act (CFAA) in the US
+   • Civil liability for damages caused
+   • Permanent ban from target services
+   • Termination of your hosting/ISP services
+   
+   Always obtain explicit written permission before testing production systems.
+   This tool is intended for authorized penetration testing and capacity planning ONLY.
+
+COMPARISON WITH HPING3 VERSION:
+   This script is functionally equivalent to the hping3 version but operates at
+   Layer 7 (HTTP) instead of Layer 4 (TCP). Both use identical:
+   • TC qdisc control architecture
+   • Python mathematical models
+   • Compressed time simulation
+   • Logging and monitoring
+   
+   Choose hping3 for: TCP-level testing, connection exhaustion, SYN floods
+   Choose Siege for: HTTP-level testing, application load, POST floods
+
+For the companion hping3 SYN flood version with identical architecture,
+see: hping3_tc_flood_simulator.sh
 
 EOF
 }
