@@ -15,7 +15,7 @@ LOG_FILE="siege_http_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
 # Cấu hình TC QDISC
-BURST_SIZE="8k"
+BURST_SIZE="32k"
 LATENCY="200ms"
 MIN_RATE="1kbit"
 MAX_RATE="2mbit"
