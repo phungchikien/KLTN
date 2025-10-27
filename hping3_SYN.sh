@@ -9,7 +9,7 @@ TARGET_IP="${1:-8.8.8.8}"
 INTERFACE="${2:-eth0}"
 DURATION="${3:-300}"
 TIME_COMPRESSION="${4:-288}"                        
-LOG_FILE="hping3_syn_flood$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="hping3_syn_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
 # TC QDISC config
