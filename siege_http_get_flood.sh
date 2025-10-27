@@ -4,7 +4,7 @@
 #     SIEGE HTTP GET FLOOD SIMULATOR WITH TC QDISC CONTROL
 # =================================================================
 
-# Cấu hình mặc định
+# Default parameters
 TARGET_URL="${1:-http://192.168.1.120:80}"
 INTERFACE="${2:-eth0}"
 DURATION="${3:-300}"
@@ -12,13 +12,13 @@ TIME_COMPRESSION="${4:-72}"
 LOG_FILE="siege_http_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
-# Cấu hình TC QDISC
+# Config TC QDISC
 BURST_SIZE="32k"
 LATENCY="200ms"
 MIN_RATE="1kbit"
 MAX_RATE="2mbit"
 
-# Cấu hình Siege
+# Config Siege
 MAX_CONCURRENT=20
 SIEGE_RC_FILE="/tmp/siege_custom_$(date +%s).rc"
 
@@ -27,14 +27,14 @@ SIEGE_PID=""
 TC_ACTIVE=false
 PYTHON_AVAILABLE=false
 
-# Hàm logging
+# Logging function
 log() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $message" | tee -a "$LOG_FILE"
 }
 
-# Hàm cleanup
+# Clean up function
 cleanup() {
     log "=== CLEANUP STARTED ==="
     
@@ -69,7 +69,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# Kiểm tra Python
+# Check Python
 check_python() {
     if command -v python3 &> /dev/null; then
         if python3 -c "import math; print('Python math OK')" &>/dev/null; then
@@ -230,11 +230,11 @@ calculate_simple_rate() {
 # RPS to bandwidth 
 rps_to_bandwidth() {
     local rps=$1
-    # HTTP request trung bình 200 - 2000B trich tu  RFC 7230 (HTTP/1.1)
+    # HTTP request average 200 - 2000B from  RFC 7230 (HTTP/1.1)
     local avg_request_bytes=500      # Request headers + body
-    local avg_response_bytes=0    # Response (2KB)
+    local avg_response_bytes=2000    # Response (2KB)
     local bytes_per_transaction=$((avg_request_bytes + avg_response_bytes))
-    local bps=$(echo "scale=0; $rps * $bytes_per_transaction * 8" | bc -l)	#convert bytes sang bits
+    local bps=$(echo "scale=0; $rps * $bytes_per_transaction * 8" | bc -l)	#convert bytes to bits
     
     local min_bps=1000
     if [ $(echo "$bps < $min_bps" | bc -l) -eq 1 ]; then
@@ -317,7 +317,7 @@ EOF
     log "Custom Siege RC created: $SIEGE_RC_FILE"
 }
 
-# Start Siege - CHẠY Ở MAX CAPACITY 
+# Start Siege - Run in MAX CAPACITY 
 start_siege_flood() {
     log "Starting Siege HTTP flood to $TARGET_URL"
     log "Max concurrent users: $MAX_CONCURRENT"
@@ -615,7 +615,7 @@ SAFETY FEATURES:
    • Graceful shutdown handling
 
 WARNING:
-   ⚠️  This script generates SIGNIFICANT HTTP traffic that can:
+     This script generates SIGNIFICANT HTTP traffic that can:
       • Saturate network bandwidth
       • Overload target web servers
       • Trigger DDoS protection systems
