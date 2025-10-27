@@ -9,7 +9,7 @@ TARGET_URL="${1:-http://192.168.1.120:80}"
 INTERFACE="${2:-eth0}"
 DURATION="${3:-300}"
 TIME_COMPRESSION="${4:-72}"
-LOG_FILE="siege_http_flood_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="siege_http_get_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
 # Config TC QDISC
