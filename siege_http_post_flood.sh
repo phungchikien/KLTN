@@ -1,10 +1,8 @@
 #!/bin/bash
 
 # =================================================================
-# SIEGE HTTP GET FLOOD SIMULATOR WITH TC QDISC CONTROL
+#     SIEGE HTTP GET FLOOD SIMULATOR WITH TC QDISC CONTROL
 # =================================================================
-# Architecture: Siege runs at max capacity, TC qdisc throttles bandwidth
-# This mimics the hping3 architecture exactly
 
 # Cấu hình mặc định
 TARGET_URL="${1:-http://example.com}"
