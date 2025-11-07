@@ -478,7 +478,7 @@ generate_yoyo_pattern_python() {
         sleep $update_interval
         current_time=$((current_time + update_interval))
     done
-
+}
 
 # Usage
 show_usage() {
