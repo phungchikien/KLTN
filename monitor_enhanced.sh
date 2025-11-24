@@ -7,12 +7,12 @@
 # CONFIGURATION
 # ============================================================================
 
-# Default OpenStack Resource ID (Can be overridden by command-line argument)
+# Default OpenStack Instance ID (Can be overridden by command-line argument)
 DEFAULT_RESOURCE_ID="d27ee539-3d00-4bbe-9b3b-2cbaf5aff071"
 RESOURCE_ID="${1:-$DEFAULT_RESOURCE_ID}"
 SERVER_NAME="${2:-$RESOURCE_ID}"
 
-# Interface ID (auto-detect or use provided)
+# Network Interface ID (auto-detect or use provided)
 INTERFACE_ID="${3:-0660c989-ba40-5c9e-950a-7d67bc89f3b2}"
 
 # Granularity for metrics collection (in seconds)
@@ -31,7 +31,7 @@ BASE_DIR="./$SERVER_NAME/$CURRENT_DATE"
 mkdir -p "$BASE_DIR"/{cpu,memory,network,disk}
 
 echo "=== Monitoring Configuration ==="
-echo "Resource ID: $RESOURCE_ID"
+echo "Instance ID: $RESOURCE_ID"
 echo "Interface ID: $INTERFACE_ID"
 echo "Server Name: $SERVER_NAME"
 echo "Base Directory: $BASE_DIR"
