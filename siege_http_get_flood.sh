@@ -501,134 +501,202 @@ show_usage() {
     cat << EOF
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                 SIEGE HTTP FLOOD WITH TC QDISC CONTROL                       ║
+║                 Python-Enhanced HTTP Traffic Pattern Generator               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
-
-DESCRIPTION:
-   1. Siege runs at MAXIMUM capacity (benchmark mode, ${MAX_CONCURRENT} concurrent)
-   2. TC qdisc throttles bandwidth according to mathematical patterns
-   3. Result: HTTP traffic follows realistic daily/weekly curves
 
 USAGE:
    $0 [TARGET_URL] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
 
 PARAMETERS:
-   TARGET_URL    : Target URL (must include http:// or https://)
-                   Default: http://example.com
-   INTERFACE     : Network interface to control bandwidth
-                   Default: eth0
-   DURATION      : Test duration in seconds
-                   Default: 300 (5 minutes)
-   COMPRESSION   : Time compression factor (1-1000)
-                   Default: 72 (1 second real = 72 seconds virtual)
-   MODE          : Simulation mode
-                   • python-compressed : Daily/weekly traffic patterns
-                   • python-yoyo       : Oscillating load patterns
-                   Default: python-compressed
-   YOYO_TYPE     : Type of yo-yo pattern (only for python-yoyo mode)
-                   • square    : Sharp on/off cycles (5000↔500 RPS)
-                   • sawtooth  : Gradual ramp up, sharp drop
-                   • burst     : Short intense bursts with quiet periods
-                   Default: square
+   TARGET_URL    : Target URL with protocol (default: http://192.168.1.120:80)
+   INTERFACE     : Network interface (default: eth0)
+   DURATION      : Test duration in seconds (default: 300)
+   COMPRESSION   : Time compression factor (default: 72x)
+   MODE          : Traffic pattern mode (see below)
+   YOYO_TYPE     : Yo-yo pattern type (for python-yoyo mode only)
 
-EXAMPLES:
-   # Basic usage - compressed time with default parameters
-   $0 http://192.168.1.100
+AVAILABLE MODES:
+   python-compressed  - Compressed time simulation with Python math engine
+                       ✓ Primary: Python mathematical functions (Gaussian, sine waves)
+                       ✓ Fallback: Simple bash calculations if Python fails
+                       ✓ Update interval: 1 second
+                       
+   python-yoyo       - Yo-yo pattern simulation with Python engine  
+                       ✓ Python-only: Advanced mathematical yo-yo patterns
+                       ✓ No fallback: Requires Python3 with math module
+                       ✓ Update interval: 5 seconds
+
+YOYO PATTERN TYPES (for python-yoyo mode):
+   square      - Square wave pattern (High: 5000 RPS, Low: 500 RPS)
+                 └─ 50% high traffic, 50% low traffic per cycle
+                 
+   sawtooth    - Gradual ramp up then sudden drop
+                 └─ Linear increase 1000→10000 RPS (80%), then drop (20%)
+                 
+   burst       - Short bursts with cooldown periods
+                 └─ Spike: 10000 RPS (10%), Mid: 5000 RPS (10%), Low: 2000 RPS (80%)
+
+ARCHITECTURE OVERVIEW:
+   ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+   │  Python Engine  │───▶│  RPS Calculation │───▶ │   TC Qdisc      │
+   │  (Primary)      │     │  RPS → Bandwidth │     │  (Bandwidth     │
+   │                 │     │                  │     │   Control)      │
+   │  Bash Fallback  │───▶│                  │     │                 │
+   │  (Backup)*      │     │                  │     │                 │
+   └─────────────────┘     └──────────────────┘     └─────────────────┘
+                                                              │
+                                                              ▼
+   ┌──────────────────────────────────────────────────────────────────┐
+   │  Siege HTTP Generator (Running at MAX capacity)                  │
+   │  • 20 concurrent users (benchmark mode)                          │
+   │  • No delays between requests                                    │
+   │  • TC qdisc throttles actual output to desired pattern           │
+   └──────────────────────────────────────────────────────────────────┘
    
-   # Full parameters - compressed time simulation
+   * Fallback chỉ available cho python-compressed mode
+
+PYTHON INTEGRATION FEATURES:
+   ✓ Mathematical precision with exp(), sin() functions
+   ✓ Gaussian curves for realistic morning/evening peaks
+   ✓ Sine wave daily cycles and weekly variations  
+   ✓ Complex multi-factor HTTP traffic modeling
+   ✓ Automatic fallback to bash arithmetic when Python unavailable
+   ✓ Real-time Python script generation (/tmp/traffic_calculator.py)
+
+EXAMPLES - CHANGE TARGET_URL TO YOUR TEST SERVER:
+   # Basic compressed time simulation (6 hours compressed to 5 minutes)
+   # Uses Python math engine with fallback support
    $0 http://192.168.1.100 eth0 300 72 python-compressed
    
-   # Yo-yo square wave pattern
+   # Square wave yo-yo pattern for 3 minutes (Python-only)
+   # High/Low alternating every 10 seconds
    $0 http://example.com eth0 180 1 python-yoyo square
    
-   # Sawtooth pattern for 10 minutes
-   $0 http://api.test.local eth0 600 1 python-yoyo sawtooth
+   # Sawtooth pattern with custom compression
+   # Gradual ramp up then sudden drop pattern  
+   $0 https://api.test.local wlan0 600 36 python-yoyo sawtooth
    
-   # Long simulation - 1 hour real = 6 days virtual
-   $0 https://api.example.com eth0 3600 144 python-compressed
+   # Burst pattern for auto-scaling stress testing
+   # Short high bursts with long idle periods
+   $0 http://192.168.1.1:8080 eth1 120 1 python-yoyo burst
    
-   # Quick test with minimal compression for overall view
-   $0 http://192.168.1.100 wlan0 60 10 python-compressed
-
-TRAFFIC PATTERNS:
-
-   Compressed Mode:
-   • Morning peak: 08:00-10:00 (higher traffic)
-   • Evening peak: 19:00-21:00 (highest traffic)
-   • Night drop:   01:00-05:00 (lowest traffic)
-   • Weekend spike: Saturday-Sunday (+30%)
-   • Minute-level variations (±30%)
-   
-   Yo-Yo Mode:
-   • 20-second cycles of high/low traffic
-   • Square:   5000 RPS ↔ 500 RPS (instant switch)
-   • Sawtooth: 1000→10000 RPS (gradual), then drop
-   • Burst:    10000→5000→2000 RPS (spike+decay)
-   
-FEATURES:
-   ✓ TC qdisc bandwidth control architecture
-   ✓ Python mathematical pattern calculations
-   ✓ Compressed time simulation (72x default)
-   ✓ Gaussian curves for peak modeling
-   ✓ Weekly/daily/hourly cycles
-   ✓ Yo-yo oscillating patterns
-   ✓ 1-second update intervals
-   ✓ Detailed logging format
-
-BANDWIDTH CALCULATION:
-   • Average HTTP request:  500 bytes (headers + body)
-   • Average HTTP response: 2000 bytes (minimal response)
-   • Total per transaction: 2500 bytes = 20000 bits
-   • Example: 5000 RPS = 100 Mbps bandwidth
-   
-   The script calculates bandwidth as:
-   BW (bps) = RPS × avg_bytes_per_transaction × 8
-
-TC QDISC SETTINGS:
-   • Algorithm: Token Bucket Filter (TBF)
-   • Burst size: ${BURST_SIZE}
-   • Latency: ${LATENCY}
-   • Rate range: ${MIN_RATE} - ${MAX_RATE}
+   # Long compressed simulation (1 week in 1 hour)
+   $0 https://api.example.com eth0 3600 168 python-compressed
 
 SYSTEM REQUIREMENTS:
-   Required:
-   • Root/sudo privileges (for TC qdisc manipulation)
-   • siege (HTTP load testing tool)
-   • bc (basic calculator for math operations)
-   • tc from iproute2 package (traffic control)
-   • Valid network interface with outbound connectivity
+   REQUIRED:
+   - Root privileges (sudo)
+   - siege package (HTTP load tester)
+   - iproute2 package (tc command)
+   - bc calculator
    
-   Recommended:
-   • Python3 with math module (for accurate calculations)
-   • Sufficient bandwidth on interface
-   • Target system authorization
+   RECOMMENDED (for full functionality):
+   - Python3 with math module
+     └─ Without Python: compressed mode uses simple fallback
+     └─ Without Python: yo-yo mode will fail
+   
+   NETWORK:
+   - Valid network interface
+   - Target should be reachable and authorized for testing
+   - Sufficient bandwidth for HTTP traffic generation
 
-OUTPUT:
-   • Real-time console logging with timestamps
-   • Log file: siege_http_flood_YYYYMMDD_HHMMSS.log
-   • Format: [timestamp] T+Xs | Virtual: DayN HH:MM | RPS: X | BW: Xmbit
+EXECUTION FLOW:
+   1. Check dependencies (siege, tc, bc, root)
+   2. Check Python availability (python3 + math module)  
+   3. Create Python calculator script (if Python available)
+   4. Initialize TC qdisc (Token Bucket Filter)
+   5. Start Siege HTTP flood (background process at MAX capacity)
+   6. Main loop:
+      - Calculate traffic rate (Python primary, bash fallback)
+      - Convert RPS to bandwidth (RPS × 2500 bytes × 8)
+      - Update TC qdisc rate
+      - Sleep and repeat
+   7. Cleanup on exit (kill siege, remove qdisc, cleanup temp files)
 
-SAFETY FEATURES:
-   • Automatic cleanup on exit (Ctrl+C)
-   • TC qdisc removal on termination
-   • Siege process cleanup
-   • Temporary file removal
-   • Graceful shutdown handling
+TRAFFIC PATTERNS EXPLAINED:
+   
+   COMPRESSED MODE:
+   - Simulates realistic daily/weekly HTTP traffic patterns
+   - Morning peak (~9 AM): Gaussian curve with moderate traffic
+   - Evening peak (~8 PM): Gaussian curve with highest traffic  
+   - Night dip (~2:30 AM): Reduced traffic period
+   - Weekend spike: Increased traffic on weekends (+30%)
+   - Continuous variation: Minute-by-minute fluctuations (±30%)
+   
+   YOYO MODES:
+   - Square: Abrupt high/low transitions for auto-scaling testing
+   - Sawtooth: Gradual scaling up for elasticity tests
+   - Burst: Short intensive periods for capacity planning tests
 
-WARNING:
-     This script generates SIGNIFICANT HTTP traffic that can:
-      • Saturate network bandwidth
-      • Overload target web servers
-      • Trigger DDoS protection systems
-      • Violate terms of service
-      
-   ✓ Use ONLY on systems you own or have explicit authorization to test
+BANDWIDTH CALCULATION:
+   HTTP Transaction Assumptions (RFC 7230):
+   - Average request:  500 bytes (headers + minimal body)
+   - Average response: 2000 bytes (2KB HTML/JSON)
+   - Total per transaction: 2500 bytes = 20000 bits
+   
+   Formula: Bandwidth (bps) = RPS × 2500 bytes × 8
+   
+   Examples:
+   - 100 RPS   = 2 Mbps
+   - 1000 RPS  = 20 Mbps
+   - 5000 RPS  = 100 Mbps
+   - 10000 RPS = 200 Mbps
+
+TC QDISC SETTINGS:
+   Algorithm: Token Bucket Filter (TBF)
+   - Burst size: ${BURST_SIZE}
+   - Latency: ${LATENCY}
+   - Rate range: ${MIN_RATE} - ${MAX_RATE}
+
+IMPORTANT WARNINGS:
+   ⚠ This tool generates MASSIVE HTTP traffic that can:
+     - Saturate network bandwidth
+     - Overload target web servers
+     - Trigger DDoS protection systems
+     - Violate terms of service agreements
+   
+   ✓ Use ONLY on systems you own or have explicit written authorization
    ✓ Ensure target can handle the load or risk service disruption
-   ✓ Consider starting with short duration and low compression first
+   ✓ Unauthorized load testing may be illegal in your jurisdiction
+   ✓ Always obtain written permission before testing production systems
 
-LEGAL NOTICE:
-   Unauthorized load testing may be illegal in your jurisdiction.
-   Always obtain written permission before testing production systems.
+MONITORING & LOGS:
+   - All activity logged to: siege_http_get_flood_YYYYMMDD_HHMMSS.log
+   - Real-time status: [PYTHON] for math engine, [FALLBACK] for bash
+   - TC qdisc changes logged with timestamps
+   - Virtual time tracking for compressed mode
+   - Pattern cycle tracking for yo-yo mode
+   - Siege process PID tracking
 
+OUTPUT FORMAT:
+   [timestamp] T+Xs | Virtual: DayN HH:MM | RPS: X | BW: Xmbit [ENGINE]
+   
+   Example:
+   [2025-01-15 10:30:46] T+1s | Virtual: Day1 00:00 | RPS: 2000 | BW: 40mbit [PYTHON]
+
+TROUBLESHOOTING:
+   - "Python not available" → Install python3 or use fallback  
+   - "TC qdisc failed" → Check interface name and root permissions
+   - "Siege failed" → Install siege package
+   - "Invalid URL" → Ensure URL starts with http:// or https://
+   - "Interface does not exist" → Check with: ip link show
+
+CLEANUP & SAFETY:
+   ✓ Automatic cleanup on exit (Ctrl+C safe)
+   ✓ Kills siege process gracefully (SIGTERM then SIGKILL)
+   ✓ Removes TC qdisc configuration
+   ✓ Deletes temporary files
+   ✓ Failsafe: pkill -9 siege on exit
+
+HELP & SUPPORT:
+   Run with: $0 -h, $0 --help, or $0 help
+   Check logs for detailed execution information
+   
+VERSION INFO:
+   Siege HTTP Traffic Simulator v1.0
+   TC Qdisc Bandwidth Control Architecture
+   Python-Enhanced Pattern Generation
+   
 EOF
 }
 # Main
