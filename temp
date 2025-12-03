@@ -1,23 +1,12 @@
-[2025-12-04 00:37:11] ┌─────────────────────────────────────────────────────────────────┐
-[2025-12-04 00:37:11] │              HTB BANDWIDTH STATISTICS                           │
-[2025-12-04 00:37:11] └─────────────────────────────────────────────────────────────────┘
 class htb 1:1 root rate 10Mbit ceil 10Mbit burst 1600b cburst 1600b 
- Sent 2588639075 bytes 33986893 pkt (dropped 0, overlimits 8973379 requeues 0) 
-class htb 1:10 parent 1:1 prio 1 rate 398Kbit ceil 10Mbit burst 1599b cburst 1600b 
+ Sent 53148908 bytes 782146 pkt (dropped 0, overlimits 283725 requeues 0) 
+class htb 1:10 parent 1:1 prio 1 rate 653Kbit ceil 10Mbit burst 1599b cburst 1600b 
+ Sent 21611718 bytes 400217 pkt (dropped 0, overlimits 21601 requeues 0) 
+class htb 1:20 parent 1:1 prio 1 rate 676Kbit ceil 10Mbit burst 1599b cburst 1600b 
+ Sent 17314814 bytes 43301 pkt (dropped 0, overlimits 2731 requeues 0) 
+class htb 1:30 parent 1:1 prio 1 rate 673Kbit ceil 10Mbit burst 1599b cburst 1600b 
  Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
-class htb 1:20 parent 1:1 prio 1 rate 419Kbit ceil 10Mbit burst 1599b cburst 1600b 
- Sent 1299078044 bytes 3283060 pkt (dropped 0, overlimits 291142 requeues 0) 
-class htb 1:30 parent 1:1 prio 1 rate 408Kbit ceil 10Mbit burst 1599b cburst 1600b 
+class htb 1:40 parent 1:1 prio 1 rate 711Kbit ceil 10Mbit burst 1599b cburst 1600b 
  Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
-class htb 1:40 parent 1:1 prio 1 rate 440Kbit ceil 10Mbit burst 1599b cburst 1600b 
- Sent 0 bytes 0 pkt (dropped 0, overlimits 0 requeues 0) 
-class htb 1:50 parent 1:1 prio 1 rate 411Kbit ceil 10Mbit burst 1599b cburst 1600b 
- Sent 1289561031 bytes 30703833 pkt (dropped 0, overlimits 23557 requeues 0) 
-
-[2025-12-04 00:37:21] T+2140s/10800s | Progress: [█████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 19% | Vectors: [✓✓✓✓✓] 5/5 active
-[2025-12-04 00:37:28] T+2160s | Virtual: Day1 4:48 | PPS: 881 | BW: 422kbit [PYTHON]
-[2025-12-04 00:37:29] T+2160s | Virtual: Day1 4:48 | PPS: 861 | BW: 413kbit [PYTHON]
-[2025-12-04 00:37:31] T+2150s/10800s | Progress: [█████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 19% | Vectors: [✓✓✓✓✓] 5/5 active
-[2025-12-04 00:37:34] T+2160s | Virtual: Day1 4:48 | PPS: 927 | BW: 444kbit [PYTHON]
-[2025-12-04 00:37:36] T+2160s | Virtual: Day1 4:48 | PPS: 927 | BW: 444kbit [PYTHON]
-[2025-12-04 00:37:36] T+2160s | Virtual: Day1 4:48 | PPS: 814 | BW: 390kbit [PYTHON]
+class htb 1:50 parent 1:1 prio 1 rate 657Kbit ceil 10Mbit burst 1599b cburst 1600b 
+ Sent 14222376 bytes 338628 pkt (dropped 0, overlimits 0 requeues 0) 
