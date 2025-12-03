@@ -2,14 +2,15 @@
 
 # =================================================================
 #     SIEGE HTTP GET FLOOD SIMULATOR WITH TC QDISC CONTROL
+#     + AUTO-RESTART ON TARGET REBOOT
 # =================================================================
 
 # Default parameters
-TARGET_URL="${1:-http://example.com}"
+TARGET_URL="${1:-http://192.168.1.120:80}"
 INTERFACE="${2:-eth0}"
 DURATION="${3:-300}"
 TIME_COMPRESSION="${4:-72}"
-LOG_FILE="siege_http_post_flood_$(date +%Y%m%d_%H%M%S).log"
+LOG_FILE="siege_http_get_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
 # Config TC QDISC
@@ -24,6 +25,7 @@ SIEGE_RC_FILE="/tmp/siege_custom_$(date +%s).rc"
 
 # PID và flags
 SIEGE_PID=""
+MONITOR_PID=""
 TC_ACTIVE=false
 PYTHON_AVAILABLE=false
 
@@ -34,9 +36,15 @@ log() {
     echo "[$timestamp] $message" | tee -a "$LOG_FILE"
 }
 
-# Cleanup Function
+# Clean up function
 cleanup() {
     log "=== CLEANUP STARTED ==="
+    
+    # Kill Monitor first
+    if [ -n "$MONITOR_PID" ] && kill -0 "$MONITOR_PID" 2>/dev/null; then
+        log "Killing monitor process (PID: $MONITOR_PID)"
+        kill -9 "$MONITOR_PID" 2>/dev/null
+    fi
     
     # Kill Siege
     if [ -n "$SIEGE_PID" ] && kill -0 "$SIEGE_PID" 2>/dev/null; then
@@ -69,7 +77,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# Python check
+# Check Python
 check_python() {
     if command -v python3 &> /dev/null; then
         if python3 -c "import math; print('Python math OK')" &>/dev/null; then
@@ -100,11 +108,11 @@ import math
 import sys
 import os
 
-SCALE_FACTOR = int(os.environ.get('TRAFFIC_SCALE_FACTOR', '10'))
+SCALE_FACTOR = int(os.environ.get('TRAFFIC_SCALE_FACTOR', '1'))
 
 def calculate_hourly_rate(hour, scale_factor=SCALE_FACTOR):
-    morning_peak = 25 * math.exp(-((hour - 9) ** 2) / 6.25)
-    evening_peak = 45 * math.exp(-((hour - 20) ** 2) / 7.84)
+    morning_peak = 36 * math.exp(-((hour - 9) ** 2) / 6.8)
+    evening_peak = 55 * math.exp(-((hour - 20) ** 2) / 7.84)
     night_drop = -15 * math.exp(-((hour - 2.5) ** 2) / 3.24)
     daily_cycle = 5 * math.sin(math.pi * hour / 12 - math.pi/2)
     base_level = 20
@@ -150,25 +158,25 @@ def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.1
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-def calculate_yoyo_rate(elapsed_seconds, cycle_duration=20, yoyo_type="square"):
+def calculate_yoyo_rate(elapsed_seconds, cycle_duration=1800, yoyo_type="square"):
     cycle_position = (elapsed_seconds % cycle_duration) / cycle_duration
     
     if yoyo_type == "square":
-        return 5000 if cycle_position < 0.5 else 500
+        return 300 if cycle_position < 0.5 else 3
     elif yoyo_type == "sawtooth":
-        if cycle_position < 0.8:
-            return int(1000 + 9000 * cycle_position / 0.8)
+        if cycle_position < 0.7:
+            return int(2 + 50 * cycle_position / 0.7)
         else:
-            return 1000
+            return 2
     elif yoyo_type == "burst":
-        if cycle_position < 0.1:
-            return 10000
-        elif cycle_position < 0.2:
-            return 5000
+        if cycle_position < 0.2:
+            return 200
+        elif cycle_position < 0.4:
+            return 50
         else:
-            return 2000
+            return 3
     else:
-        return 5000
+        return 30
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -230,11 +238,10 @@ calculate_simple_rate() {
 # RPS to bandwidth 
 rps_to_bandwidth() {
     local rps=$1
-    # HTTP request average 200 - 2000B from RFC 7230 (HTTP/1.1)
-    local avg_request_bytes=500      # Request headers + body
-    local avg_response_bytes=2000    # Response (2KB)
+    local avg_request_bytes=500
+    local avg_response_bytes=2000
     local bytes_per_transaction=$((avg_request_bytes + avg_response_bytes))
-    local bps=$(echo "scale=0; $rps * $bytes_per_transaction * 8" | bc -l)	#convert bytes sang bits
+    local bps=$(echo "scale=0; $rps * $bytes_per_transaction * 8" | bc -l)
     
     local min_bps=1000
     if [ $(echo "$bps < $min_bps" | bc -l) -eq 1 ]; then
@@ -307,14 +314,15 @@ cache = false
 connection = close
 concurrent = $MAX_CONCURRENT
 delay = 0.5
-timeout = 30
-failures = 1024
+timeout = 3
+failures = 0
 benchmark = true
 user-agent = Mozilla/5.0 (compatible; SiegeLoadTester/1.0)
 accept-encoding = gzip, deflate
 EOF
 
     log "Custom Siege RC created: $SIEGE_RC_FILE"
+    log "Config: timeout=3s, failures=unlimited, connection=close"
 }
 
 # Start Siege - Run in MAX CAPACITY 
@@ -327,7 +335,7 @@ start_siege_flood() {
         -R "$SIEGE_RC_FILE" \
         -c "$MAX_CONCURRENT" \
         -t "${DURATION}s" \
-        "$TARGET_URL POST name=test&email=test@example.com" \
+        "$TARGET_URL POST" \
         >> "$LOG_FILE" 2>&1 &
     
     SIEGE_PID=$!
@@ -343,33 +351,152 @@ start_siege_flood() {
     fi
 }
 
+# Wait for target to be ready
+wait_for_target_ready() {
+    local target_host=$(echo $TARGET_URL | sed -e 's|^http://||' -e 's|^https://||' -e 's|:.*||' -e 's|/.*||')
+    local max_wait=180
+    local waited=0
+    
+    log "Waiting for target $target_host to be ready..."
+    
+    while [ $waited -lt $max_wait ]; do
+        if timeout 5 curl -sf -o /dev/null "$TARGET_URL" 2>/dev/null; then
+            log "✓ Target is ready after ${waited}s"
+            return 0
+        fi
+        
+        sleep 5
+        waited=$((waited + 5))
+        
+        if [ $((waited % 30)) -eq 0 ]; then
+            log "  Still waiting for target... (${waited}s elapsed)"
+        fi
+    done
+    
+    log "✗ Target not responding after ${max_wait}s"
+    return 1
+}
+
+# Restart Siege
+restart_siege() {
+    log "=== RESTARTING SIEGE ==="
+    
+    # Kill old Siege
+    if [ -n "$SIEGE_PID" ] && kill -0 "$SIEGE_PID" 2>/dev/null; then
+        log "Killing old Siege process (PID: $SIEGE_PID)"
+        kill -TERM "$SIEGE_PID" 2>/dev/null
+        sleep 2
+        kill -KILL "$SIEGE_PID" 2>/dev/null 2>&1
+    fi
+    
+    pkill -9 siege 2>/dev/null
+    sleep 2
+    
+    # Flush ARP cache
+    local target_ip=$(echo $TARGET_URL | sed -e 's|^http://||' -e 's|^https://||' -e 's|:.*||' -e 's|/.*||')
+    log "Flushing ARP cache for $target_ip..."
+    arp -d "$target_ip" 2>/dev/null || true
+    ip neigh flush dev "$INTERFACE" 2>/dev/null || true
+    
+    # Wait for target ready
+    if ! wait_for_target_ready; then
+        log "ERROR: Target not ready, cannot restart Siege"
+        return 1
+    fi
+    
+    # Extra stabilization time
+    log "Waiting 5s for target stabilization..."
+    sleep 5
+    
+    # Start new Siege
+    if start_siege_flood; then
+        log "✓ Siege restarted successfully (New PID: $SIEGE_PID)"
+        return 0
+    else
+        log "✗ Failed to restart Siege"
+        return 1
+    fi
+}
+
+# Monitor target health and auto-restart Siege
+monitor_target_health() {
+    local consecutive_failures=0
+    local max_failures=3
+    local check_interval=15
+    
+    log "=== HEALTH MONITOR STARTED ==="
+    log "Check interval: ${check_interval}s"
+    log "Failure threshold: ${max_failures} consecutive failures"
+    
+    while true; do
+        sleep $check_interval
+        
+        # Check if Siege is still running
+        if ! kill -0 "$SIEGE_PID" 2>/dev/null; then
+            log "⚠ WARNING: Siege process died unexpectedly!"
+            if restart_siege; then
+                consecutive_failures=0
+                continue
+            else
+                log "ERROR: Failed to restart Siege, monitor exiting"
+                return 1
+            fi
+        fi
+        
+        # Check target connectivity
+        if timeout 5 curl -sf -o /dev/null "$TARGET_URL" 2>/dev/null; then
+            # Target OK
+            if [ $consecutive_failures -gt 0 ]; then
+                log "✓ Target recovered (was down for $((consecutive_failures * check_interval))s)"
+                consecutive_failures=0
+            fi
+        else
+            # Target NOT responding
+            consecutive_failures=$((consecutive_failures + 1))
+            log "⚠ Target check failed (${consecutive_failures}/${max_failures})"
+            
+            if [ $consecutive_failures -ge $max_failures ]; then
+                log "⚠ Target appears to be DOWN (no response for $((consecutive_failures * check_interval))s)"
+                log "   Likely instance reboot in progress..."
+                
+                # Restart Siege (will wait for target to be ready)
+                if restart_siege; then
+                    log "✓ Traffic resumed after target recovery"
+                    consecutive_failures=0
+                else
+                    log "ERROR: Failed to restart Siege after target recovery"
+                    return 1
+                fi
+            fi
+        fi
+    done
+}
+
 generate_compressed_pattern_python() {
     local duration_seconds=$1
     
-    log "=== SIEGE + TC QDISC SIMULATION (IDENTICAL TO HPING3 ARCHITECTURE) ==="
+    log "=== SIEGE + TC QDISC SIMULATION ==="
     log "Math Engine: Python3 with accurate mathematical functions"
     log "Compression factor: ${TIME_COMPRESSION}x"
-    log "Real duration: ${duration_seconds}s = Virtual: $(python3 -c "print(f'{$duration_seconds * $TIME_COMPRESSION / 3600:.1f}')" 2>/dev/null || echo "N/A")h"
+    log "Real duration: ${duration_seconds}s"
     log "Target URL: $TARGET_URL"
-    log ""
-    log "Architecture:"
-    log "  1. Siege runs at MAX capacity (${MAX_CONCURRENT} concurrent)"
-    log "  2. TC qdisc throttles bandwidth according to pattern"
-    log "  3. Result: Traffic follows mathematical curves"
     
-    # Init TC qdisc
     if ! init_tc_qdisc; then
         log "ERROR: Cannot initialize TC qdisc"
         return 1
     fi
     
-    # Start Siege at max
     if ! start_siege_flood; then
         log "ERROR: Cannot start Siege flood"
         return 1
     fi
     
-    local update_interval=1
+    # Start health monitor in background
+    monitor_target_health &
+    MONITOR_PID=$!
+    log "✓ Health monitor started (PID: $MONITOR_PID)"
+    
+    local update_interval=60
     local current_time=0
     local last_rate=""
     
@@ -385,33 +512,22 @@ generate_compressed_pattern_python() {
             
             if [ "$bandwidth" != "$last_rate" ]; then
                 if update_tc_rate "$bandwidth"; then
-                    log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} [PYTHON]"
+                    log "T+${current_time}s | Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID}"
                     last_rate="$bandwidth"
-                else
-                    log "T+${current_time}s | ERROR: Failed to update TC rate to $bandwidth"
                 fi
-            elif [ "$VERBOSE" = true ]; then
-                log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} [unchanged]"
             fi
-        else
-            log "T+${current_time}s | ERROR: Python calculation failed, using fallback"
-            local hour=$(echo "scale=0; ($current_time * $TIME_COMPRESSION / 3600) % 24" | bc -l)
-            local day=$(echo "scale=0; ($current_time * $TIME_COMPRESSION / 86400) % 7 + 1" | bc -l)
-            local minute=$(echo "scale=0; ($current_time * $TIME_COMPRESSION % 3600) / 60" | bc -l)
-            
-            local simple_rate=$(calculate_simple_rate $hour $day $minute)
-            local bandwidth=$(rps_to_bandwidth "$simple_rate")
-            
-            update_tc_rate "$bandwidth"
-            log "T+${current_time}s | Virtual: Day${day} ${hour}:$(printf "%02d" $minute) | RPS: ${simple_rate} | BW: ${bandwidth} [FALLBACK]"
         fi
         
         sleep $update_interval
         current_time=$((current_time + update_interval))
     done
+    
+    # Kill monitor
+    if [ -n "$MONITOR_PID" ] && kill -0 "$MONITOR_PID" 2>/dev/null; then
+        kill -9 "$MONITOR_PID" 2>/dev/null
+    fi
 }
 
-# Yo-yo pattern
 generate_yoyo_pattern_python() {
     local duration_seconds=$1
     local yoyo_type="${2:-square}"
@@ -430,7 +546,12 @@ generate_yoyo_pattern_python() {
         return 1
     fi
     
-    local update_interval=5
+    # Start health monitor in background
+    monitor_target_health &
+    MONITOR_PID=$!
+    log "✓ Health monitor started (PID: $MONITOR_PID)"
+    
+    local update_interval=60
     local current_time=0
     
     while [ $current_time -lt $duration_seconds ]; do
@@ -442,20 +563,20 @@ generate_yoyo_pattern_python() {
             local bandwidth=$(rps_to_bandwidth "$rps")
             
             if update_tc_rate "$bandwidth"; then
-                log "T+${current_time}s | Cycle: ${cycle_pos} | RPS: ${rps} | BW: ${bandwidth} [$yoyo_type-PYTHON]"
-            else
-                log "T+${current_time}s | ERROR: Failed to update yo-yo rate to $bandwidth"
+                log "T+${current_time}s | Cycle: ${cycle_pos} | RPS: ${rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID} [$yoyo_type]"
             fi
-        else
-            log "T+${current_time}s | ERROR: Python yo-yo calculation failed"
         fi
         
         sleep $update_interval
         current_time=$((current_time + update_interval))
     done
+    
+    # Kill monitor
+    if [ -n "$MONITOR_PID" ] && kill -0 "$MONITOR_PID" 2>/dev/null; then
+        kill -9 "$MONITOR_PID" 2>/dev/null
+    fi
 }
 
-# Dependencies check
 check_dependencies() {
     local missing_deps=()
     
@@ -469,6 +590,10 @@ check_dependencies() {
     
     if ! command -v tc &> /dev/null; then
         missing_deps+=("iproute2")
+    fi
+    
+    if ! command -v curl &> /dev/null; then
+        missing_deps+=("curl")
     fi
     
     if [[ $EUID -ne 0 ]]; then
@@ -487,7 +612,6 @@ check_dependencies() {
     fi
 }
 
-# Validate URL
 validate_url() {
     local url=$1
     if [[ ! "$url" =~ ^https?:// ]]; then
@@ -496,203 +620,11 @@ validate_url() {
     fi
 }
 
-show_usage() {
-    cat << EOF
-╔══════════════════════════════════════════════════════════════════════════════╗
-║              SIEGE HTTP POST FLOOD WITH TC QDISC CONTROL                     ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-DESCRIPTION:
-   1. Siege runs at MAXIMUM capacity (benchmark mode, ${MAX_CONCURRENT} concurrent)
-   2. TC qdisc throttles bandwidth according to mathematical patterns
-   3. Result: HTTP traffic follows realistic daily/weekly curves
-
-USAGE:
-   $0 [TARGET_URL] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
-
-PARAMETERS:
-   TARGET_URL    : Target URL (must include http:// or https://)
-                   Default: http://192.168.1.120/
-                   Note: POST data automatically appended (name=test&email=test@example.com)
-   INTERFACE     : Network interface to control bandwidth
-                   Default: eth0
-   DURATION      : Test duration in seconds
-                   Default: 300 (5 minutes)
-   COMPRESSION   : Time compression factor (1-1000)
-                   Default: 72 (1 second real = 72 seconds virtual)
-   MODE          : Simulation mode
-                   • python-compressed : Daily/weekly traffic patterns
-                   • python-yoyo       : Oscillating load patterns
-                   Default: python-compressed
-   YOYO_TYPE     : Type of yo-yo pattern (only for python-yoyo mode)
-                   • square    : Sharp on/off cycles (5000↔500 RPS)
-                   • sawtooth  : Gradual ramp up, sharp drop
-                   • burst     : Short intense bursts with quiet periods
-                   Default: square
-
-EXAMPLES:
-   # Basic usage - compressed time with defaults
-   $0 http://192.168.1.100
-   
-   # Full parameters - compressed time simulation
-   $0 http://192.168.1.100 eth0 300 72 python-compressed
-   
-   # Yo-yo square wave pattern
-   $0 http://example.com eth0 180 1 python-yoyo square
-   
-   # Sawtooth pattern for 10 minutes
-   $0 http://api.test.local eth0 600 1 python-yoyo sawtooth
-   
-   # Long simulation - 1 hour real = 6 days virtual
-   $0 https://api.example.com eth0 3600 144 python-compressed
-   
-   # Quick test with minimal compression
-   $0 http://192.168.1.100 wlan0 60 10 python-compressed
-
-TRAFFIC PATTERNS:
-
-   Compressed Mode (Daily/Weekly Cycles):
-   • Morning peak: 08:00-10:00 (higher traffic)
-   • Evening peak: 19:00-21:00 (highest traffic)
-   • Night drop:   01:00-05:00 (lowest traffic)
-   • Weekend spike: Saturday-Sunday (+30%)
-   • Minute-level variations (±30%)
-   
-   Yo-Yo Mode (20-second cycles):
-   • Square:   5000 RPS ↔ 500 RPS (instant switch every 10s)
-   • Sawtooth: 1000→10000 RPS (gradual 16s), then drop (4s)
-   • Burst:    10000→5000→2000 RPS (spike 2s + decay 2s + sustain 16s)
-   
-FEATURE:
-   ✓ TC qdisc bandwidth control architecture
-   ✓ Python mathematical pattern calculations
-   ✓ Compressed time simulation (72x default)
-   ✓ Gaussian curves for peak modeling
-   ✓ Weekly/daily/hourly cycles
-   ✓ Yo-yo oscillating patterns
-   ✓ 1-second update intervals
-   ✓ Detailed logging format
-
-BANDWIDTH CALCULATION:
-   • Average HTTP POST request:  500 bytes (headers + POST body)
-   • Average HTTP POST response: 0 bytes (minimal/ignored for flood)
-   • Total per transaction: 500 bytes = 4000 bits
-   • Example: 5000 RPS = 5000 × 500 × 8 = 20 Mbps bandwidth
-   
-   The script calculates bandwidth as:
-   BW (bps) = RPS × avg_bytes_per_transaction × 8
-   
-   Note: Response size set to 0 because in flood mode we don't wait for responses.
-
-POST DATA STRUCTURE:
-   Automatically appended to each request:
-   • Content-Type: application/x-www-form-urlencoded
-   • POST Body: name=test&email=test@example.com
-   • Total POST payload: ~40 bytes
-   • Total request size: ~500 bytes (headers + body)
-
-TC QDISC SETTINGS:
-   • Algorithm: Token Bucket Filter (TBF)
-   • Burst size: ${BURST_SIZE}
-   • Latency: ${LATENCY}
-   • Rate range: ${MIN_RATE} - ${MAX_RATE}
-   • Update interval: 1 second (compressed) / 5 seconds (yoyo)
-
-SIEGE CONFIGURATION:
-   • Protocol: HTTP/1.1
-   • Connection: close (new connection per request)
-   • Chunked encoding: enabled
-   • Cache: disabled
-   • Concurrent users: ${MAX_CONCURRENT}
-   • Benchmark mode: enabled (maximum speed)
-   • Delay between requests: 0.5s per user
-   • Timeout: 30s
-   • Max failures: 1024
-
-SYSTEM REQUIREMENTS:
-   Required:
-   • Root/sudo privileges (for TC qdisc manipulation)
-   • siege (HTTP load testing tool)
-   • bc (basic calculator for math operations)
-   • tc from iproute2 package (traffic control)
-   • Valid network interface with outbound connectivity
-   
-   Recommended:
-   • Python3 with math module (for accurate calculations)
-   • Sufficient bandwidth on interface
-   • Target system authorization
-
-OUTPUT FORMAT:
-   Real-time console logging with timestamps:
-   [YYYY-MM-DD HH:MM:SS] T+Xs | Virtual: DayN HH:MM | RPS: X | BW: Xmbit [PYTHON]
-   
-   Log file: siege_http_flood_YYYYMMDD_HHMMSS.log
-   Contains:
-   • All console output
-   • Siege internal logs
-   • Error messages
-   • Cleanup activities
-
-SAFETY FEATURES:
-   • Automatic cleanup on exit (Ctrl+C, SIGTERM)
-   • TC qdisc removal on termination
-   • Siege process cleanup (SIGTERM → SIGKILL after 2s)
-   • Failsafe: pkill -9 siege as last resort
-   • Temporary file removal (\$SIEGE_RC_FILE, traffic_calculator.py)
-   • Graceful shutdown handling via trap
-
-MONITORING:
-   During execution, you can monitor:
-   • Real-time bandwidth: tc -s qdisc show dev $INTERFACE
-   • Siege processes: ps aux | grep siege
-   • Network traffic: iftop -i $INTERFACE
-   • Connections: netstat -an | grep <TARGET_IP>
-
-TROUBLESHOOTING:
-   If Siege fails to start:
-   • Check if siege is installed: which siege
-   • Verify URL is reachable: curl -I <TARGET_URL>
-   • Check interface exists: ip link show $INTERFACE
-   
-   If TC qdisc fails:
-   • Ensure root privileges: sudo -v
-   • Check kernel modules: lsmod | grep sch_tbf
-   • Verify interface is up: ip link show $INTERFACE
-
-WARNING:
-     This script generates SIGNIFICANT HTTP POST traffic that can:
-      • Saturate network bandwidth (up to 2 Mbps per default settings)
-      • Overload target web servers with form submissions
-      • Fill server logs rapidly
-      • Trigger DDoS protection systems (Cloudflare, AWS Shield, etc.)
-      • Violate terms of service
-      • Cause data corruption if POST endpoints have side effects
-      
-   ✓ Use ONLY on systems you own or have explicit written authorization to test
-   ✓ Ensure target can handle the load or risk service disruption
-   ✓ Start with short duration (60s) and low compression (10x) first
-   ✓ Monitor target system resources during testing
-   ✓ Have a rollback plan if target becomes unresponsive
-
-LEGAL NOTICE:
-   Unauthorized load testing, stress testing, or DoS attacks are ILLEGAL in most
-   jurisdictions and may result in:
-   • Criminal prosecution under Computer Fraud and Abuse Act (CFAA) in the US
-   • Civil liability for damages caused
-   • Permanent ban from target services
-   • Termination of your hosting/ISP services
-   
-   Always obtain explicit written permission before testing production systems.
-   This tool is intended for authorized penetration testing and capacity planning ONLY.
-EOF
-}
-
-# Main
 main() {
     local mode="${5:-python-compressed}"
     local yoyo_type="${6:-square}"
     
-    log "=== SIEGE HTTP FLOOD SIMULATOR ==="
+    log "=== SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ==="
     log "Target URL: $TARGET_URL"
     log "Interface: $INTERFACE"
     log "Duration: ${DURATION}s"
@@ -710,33 +642,19 @@ main() {
         create_python_calculator
         log "Python math calculator created successfully"
     else
-        log "Using simplified math fallback"
-    fi
-    
-    if ! ping -c 1 -W 2 "$(echo $TARGET_URL | sed -e 's|^http://||' -e 's|^https://||' -e 's|/.*||')" &>/dev/null; then
-        log "WARNING: Target may not be reachable"
+        log "Python not available, cannot run"
+        exit 1
     fi
     
     case "$mode" in
         "python-compressed")
-            if [ "$PYTHON_AVAILABLE" = true ]; then
-                generate_compressed_pattern_python "$DURATION"
-            else
-                log "Python not available, cannot run compressed mode"
-                exit 1
-            fi
+            generate_compressed_pattern_python "$DURATION"
             ;;
         "python-yoyo")
-            if [ "$PYTHON_AVAILABLE" = true ]; then
-                generate_yoyo_pattern_python "$DURATION" "$yoyo_type"
-            else
-                log "Python not available, cannot run yoyo mode"
-                exit 1
-            fi
+            generate_yoyo_pattern_python "$DURATION" "$yoyo_type"
             ;;
         *)
             log "ERROR: Unknown mode: $mode"
-            show_usage
             exit 1
             ;;
     esac
@@ -744,10 +662,5 @@ main() {
     log "=== SIMULATION COMPLETED ==="
     log "Log file: $LOG_FILE"
 }
-
-if [[ "$1" == "-h" || "$1" == "--help" || "$1" == "help" ]]; then
-    show_usage
-    exit 0
-fi
 
 main "$@"
