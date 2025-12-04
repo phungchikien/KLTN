@@ -1,131 +1,97 @@
-[2025-12-04 15:47:50] Initializing root HTB qdisc on br-ex
-Warning: sch_htb: quantum of class 10099 is big. Consider r2q change.
-[2025-12-04 15:47:50] Starting simulator_ACK_htb.sh
-[2025-12-04 15:47:50] Starting simulator_SYN_htb.sh
-[2025-12-04 15:47:50] Starting simulator_UDP_htb.sh
-[2025-12-04 15:47:50] Starting simulator_ICMP_htb.sh
-./simulator_SYN_htb.sh: line 658: syntax error near unexpected token `newline'
-./simulator_SYN_htb.sh: line 658: `        *'
-[2025-12-04 15:47:50] Starting simulator_IP_Fragment_htb.sh
-./simulator_UDP_htb.sh: line 658: syntax error near unexpected token `newline'
-./simulator_UDP_htb.sh: line 658: `        *'
-[2025-12-04 15:47:50] === PYTHON-ENHANCED HPING3 TRAFFIC SIMULATOR ===
-[2025-12-04 15:47:50] === CLEANUP STARTED ===
-./simulator_ICMP_htb.sh: line 637: syntax error: unexpected end of file
-[2025-12-04 15:47:50] Starting simulator_HTTP_GET_flood.sh
-[2025-12-04 15:47:50] === CLEANUP STARTED ===
-[2025-12-04 15:47:50] === CLEANUP COMPLETED ===
-[2025-12-04 15:47:50] Target: 172.24.4.117
-[2025-12-04 15:47:50] Starting simulator_HTTP_POST_flood.sh
-[2025-12-04 15:47:50] Waiting for all processes...
-[2025-12-04 15:47:50] === CLEANUP COMPLETED ===
-[2025-12-04 15:47:50] Interface: br-ex
-[2025-12-04 15:47:50] === CLEANUP STARTED ===
-[2025-12-04 15:47:50] === PYTHON-ENHANCED HPING3 ACK TRAFFIC SIMULATOR ===
-[2025-12-04 15:47:50] Duration: 3600s
-[2025-12-04 15:47:50] === CLEANUP COMPLETED ===
-[2025-12-04 15:47:50] === SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ===
-[2025-12-04 15:47:50] === SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ===
-[2025-12-04 15:47:50] Target: 172.24.4.117
-[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
-[2025-12-04 15:47:50] Compression: 24x
-[2025-12-04 15:47:50] Interface: br-ex
-[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
-[2025-12-04 15:47:50] Interface: br-ex
-[2025-12-04 15:47:50] Mode: python-compressed
-[2025-12-04 15:47:50] Duration: 3600s
-[2025-12-04 15:47:50] Interface: br-ex
-[2025-12-04 15:47:50] Duration: 3600s
-[2025-12-04 15:47:50] Compression: 24x
-[2025-12-04 15:47:50] Duration: 3600s
-[2025-12-04 15:47:50] Compression: 24x
-[2025-12-04 15:47:50] Mode: python-compressed
-[2025-12-04 15:47:50] Compression: 24x
-[2025-12-04 15:47:50] Mode: python-compressed
-[2025-12-04 15:47:50] Mode: python-compressed
-[2025-12-04 15:47:50] Max Concurrent: 20 users
-[2025-12-04 15:47:50] HTB Mode: DISABLED (Standalone)
-[2025-12-04 15:47:50] Max Concurrent: 20 users
-[2025-12-04 15:47:50] Python3 with math module: Available
-[2025-12-04 15:47:50] Python math calculator created successfully
-[2025-12-04 15:47:50] === PYTHON-ENHANCED TC QDISC SIMULATION ===
-[2025-12-04 15:47:50] Python3 with math module: Available
-[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
-[2025-12-04 15:47:50] Python3 with math module: Available
-[2025-12-04 15:47:50] Python3 with math module: Available
-[2025-12-04 15:47:50] Compression factor: 24x
-[2025-12-04 15:47:50] Custom Siege RC created: /tmp/siege_custom_1764838070.rc
-[2025-12-04 15:47:50] Python math calculator created successfully
-[2025-12-04 15:47:50] Config: timeout=3s, failures=unlimited, connection=close
-[2025-12-04 15:47:50] Custom Siege RC created: /tmp/siege_custom_1764838070.rc
-[2025-12-04 15:47:50] Config: timeout=3s, failures=unlimited, connection=close
-[2025-12-04 15:47:50] === PYTHON-ENHANCED TC SIMULATION (ACK) ===
-[2025-12-04 15:47:50] Python math calculator created successfully
-[2025-12-04 15:47:50] === SIEGE + TC QDISC SIMULATION ===
-[2025-12-04 15:47:50] Mode: STANDALONE
-[2025-12-04 15:47:50] Python math calculator created successfully
-[2025-12-04 15:47:50] Real duration: 3600s = Virtual: 24.0h
-[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
-[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
-[2025-12-04 15:47:50] Initializing TC HTB class on interface br-ex
-[2025-12-04 15:47:50] === SIEGE + TC QDISC SIMULATION ===
-[2025-12-04 15:47:50] Compression factor: 24x
-[2025-12-04 15:47:50] Compression factor: 24x
+(base) minh@vm:~$ sudo ./multi_vector.sh 172.24.4.117 br-ex 3600 24 python-compressed
+╔═══════════════════════════════════════════════════════════════════════════╗
+║          MULTI-VECTOR DoS ORCHESTRATOR with HTB                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+[2025-12-04 17:47:33] === ORCHESTRATOR STARTED ===
+[2025-12-04 17:47:33] Target: 172.24.4.117
+[2025-12-04 17:47:33] Interface: br-ex
+[2025-12-04 17:47:33] Duration: 3600s
+[2025-12-04 17:47:33] Time Compression: 24x
+[2025-12-04 17:47:33] Mode: python-compressed
+[2025-12-04 17:47:33] Total Bandwidth: 10gbit
+[2025-12-04 17:47:33] Script Directory: /home/minh
+[2025-12-04 17:47:33] 
+[2025-12-04 17:47:33] Bandwidth Allocation:
+[2025-12-04 17:47:33]   • siege_http_get_flood: 15%
+[2025-12-04 17:47:33]   • hping3_SYN: 20%
+[2025-12-04 17:47:33]   • hping3_ICMP: 15%
+[2025-12-04 17:47:33]   • hping3_IP_Fragment: 15%
+[2025-12-04 17:47:33]   • siege_http_post_flood: 10%
+[2025-12-04 17:47:33]   • hping3_ACK: 10%
+[2025-12-04 17:47:33]   • hping3_UDP: 15%
+[2025-12-04 17:47:33] 
+[2025-12-04 17:47:33] ✓ All dependencies satisfied
+[2025-12-04 17:47:33] ✓ Python3 with math module available
+[2025-12-04 17:47:33] 
+[2025-12-04 17:47:33] Initializing HTB qdisc on br-ex
+Warning: sch_htb: quantum of class 10001 is big. Consider r2q change.
+[2025-12-04 17:47:34] Creating HTB classes:
 Warning: sch_htb: quantum of class 10010 is small. Consider r2q change.
-[2025-12-04 15:47:50] Real duration: 3600s
-[2025-12-04 15:47:50] Standalone Mode: Initializing TBF qdisc on interface br-ex
-[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
-[2025-12-04 15:47:50] Starting hping3 flood to 172.24.4.117
-[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
-[2025-12-04 15:47:50] Compression factor: 24x
-[2025-12-04 15:47:50] Initializing TC HTB class on interface br-ex
-[2025-12-04 15:47:50] Real duration: 3600s
-[2025-12-04 15:47:50] hping3 started successfully (PID: 437850)
-RTNETLINK answers: No such file or directory
-Error: Parent Qdisc doesn't exists.
-We have an error talking to the kernel
-[2025-12-04 15:47:50] TC qdisc initialized successfully
-[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
-[2025-12-04 15:47:50] Starting hping3 ACK flood to 172.24.4.117
-[2025-12-04 15:47:50] Initializing TC HTB class on interface br-ex
-[2025-12-04 15:47:50] Starting Siege HTTP flood to http://172.24.4.117:80
-[2025-12-04 15:47:50] hping3 started successfully (PID: 437881)
-RTNETLINK answers: No such file or directory
-[2025-12-04 15:47:50] Max concurrent users: 20
-Error: Parent Qdisc doesn't exists.
-We have an error talking to the kernel
-[2025-12-04 15:47:50] Mode: Benchmark (no delays, maximum speed)
-[2025-12-04 15:47:50] Starting Siege HTTP flood to http://172.24.4.117:80
-[2025-12-04 15:47:50] Siege started successfully (PID: 437901)
-[2025-12-04 15:47:50] Max concurrent users: 20
-[2025-12-04 15:47:50] Siege is running at MAXIMUM CAPACITY
-[2025-12-04 15:47:50] TC qdisc will control actual traffic rate
-[2025-12-04 15:47:50] Mode: Benchmark (no delays, maximum speed)
-[2025-12-04 15:47:50] === HEALTH MONITOR STARTED ===
-[2025-12-04 15:47:50] ✓ Health monitor started (PID: 437955)
-[2025-12-04 15:47:50] Siege started successfully (PID: 437959)
-[2025-12-04 15:47:50] Check interval: 15s
-[2025-12-04 15:47:50] Siege is running at MAXIMUM CAPACITY
-[2025-12-04 15:47:50] Failure threshold: 3 consecutive failures
-[2025-12-04 15:47:50] TC qdisc will control actual traffic rate
-[2025-12-04 15:47:50] === HEALTH MONITOR STARTED ===
-[2025-12-04 15:47:50] ✓ Health monitor started (PID: 438032)
-[2025-12-04 15:47:50] Updating TC rate to 13kbit
-[2025-12-04 15:47:50] Check interval: 15s
-RTNETLINK answers: No such file or directory
-[2025-12-04 15:47:50] Failure threshold: 3 consecutive failures
-[2025-12-04 15:47:50] T+0s | Virtual: Day1 0:00 | PPS: 28 | BW: 13kbit [PYTHON]
-[2025-12-04 15:47:50] T+0s | Virtual: Day1 0:00 | PPS: 32 | BW: 15kbit [PYTHON]
-[2025-12-04 15:47:50] Updating TC rate to 740kbit
-RTNETLINK answers: No such file or directory
-[2025-12-04 15:47:50] T+0s | Day1 0:00 | RPS: 37 | BW: 740kbit | Siege: 437901
-[2025-12-04 15:47:50] Updating TC rate to 700kbit
-RTNETLINK answers: No such file or directory
-[2025-12-04 15:47:50] T+0s | Day1 0:00 | RPS: 35 | BW: 700kbit | Siege: 437959
-[2025-12-04 15:48:10] ⚠ Target check failed (1/3)
-[2025-12-04 15:48:10] ⚠ Target check failed (1/3)
-[2025-12-04 15:48:30] ⚠ Target check failed (2/3)
-[2025-12-04 15:48:30] ⚠ Target check failed (2/3)
-c^C
-(base) minh@vm:~$ ^C
+[2025-12-04 17:47:34]   ✓ Class 1:10 → simulator_ICMP_htb (% weight, ceil: 10gbit)
+Warning: sch_htb: quantum of class 10011 is small. Consider r2q change.
+[2025-12-04 17:47:34]   ✓ Class 1:11 → simulator_IP_Fragment_htb (% weight, ceil: 10gbit)
+Warning: sch_htb: quantum of class 10012 is small. Consider r2q change.
+[2025-12-04 17:47:34]   ✓ Class 1:12 → simulator_SYN_htb (% weight, ceil: 10gbit)
+Warning: sch_htb: quantum of class 10013 is small. Consider r2q change.
+[2025-12-04 17:47:34]   ✓ Class 1:13 → simulator_UDP_htb (% weight, ceil: 10gbit)
+Warning: sch_htb: quantum of class 10014 is small. Consider r2q change.
+[2025-12-04 17:47:34]   ✓ Class 1:14 → simulator_ACK_htb (% weight, ceil: 10gbit)
+Warning: sch_htb: quantum of class 10015 is small. Consider r2q change.
+[2025-12-04 17:47:34]   ✓ Class 1:15 → simulator_HTTP_GET_flood (% weight, ceil: 10gbit)
+Warning: sch_htb: quantum of class 10016 is small. Consider r2q change.
+[2025-12-04 17:47:34]   ✓ Class 1:16 → simulator_HTTP_POST_flood (% weight, ceil: 10gbit)
+Warning: sch_htb: quantum of class 10099 is small. Consider r2q change.
+[2025-12-04 17:47:34] ✓ HTB qdisc initialized with 7 classes
+[2025-12-04 17:47:34] HTB structure:
+class htb 1:99 parent 1:1 leaf 99: prio 0 rate 1Kbit ceil 10Mbit burst 1600b cburst 1600b 
+class htb 1:11 parent 1:1 leaf 11: prio 7 rate 1Kbit ceil 10Gbit burst 15Kb cburst 0b 
+class htb 1:10 parent 1:1 leaf 10: prio 7 rate 1Kbit ceil 10Gbit burst 15Kb cburst 0b 
+class htb 1:1 root rate 10Gbit ceil 10Gbit burst 0b cburst 0b 
+class htb 1:13 parent 1:1 leaf 13: prio 7 rate 1Kbit ceil 10Gbit burst 15Kb cburst 0b 
+class htb 1:12 parent 1:1 leaf 12: prio 7 rate 1Kbit ceil 10Gbit burst 15Kb cburst 0b 
+class htb 1:15 parent 1:1 leaf 15: prio 7 rate 1Kbit ceil 10Gbit burst 15Kb cburst 0b 
+class htb 1:14 parent 1:1 leaf 14: prio 7 rate 1Kbit ceil 10Gbit burst 15Kb cburst 0b 
+class htb 1:16 parent 1:1 leaf 16: prio 7 rate 1Kbit ceil 10Gbit burst 15Kb cburst 0b 
+[2025-12-04 17:47:34] 
+[2025-12-04 17:47:34] Starting vectors (staggered startup)...
+[2025-12-04 17:47:34] Starting: simulator_ICMP_htb → HTB class 1:10
+[2025-12-04 17:47:35]   ✗ Failed to start
+[2025-12-04 17:47:38] Starting: simulator_IP_Fragment_htb → HTB class 1:11
+[2025-12-04 17:47:39]   ✗ Failed to start
+[2025-12-04 17:47:42] Starting: simulator_SYN_htb → HTB class 1:12
+[2025-12-04 17:47:43]   ✗ Failed to start
+[2025-12-04 17:47:46] Starting: simulator_UDP_htb → HTB class 1:13
+[2025-12-04 17:47:47]   ✗ Failed to start
+[2025-12-04 17:47:50] Starting: simulator_ACK_htb → HTB class 1:14
+[2025-12-04 17:47:51]   ✗ Failed to start
+[2025-12-04 17:47:54] Starting: simulator_HTTP_GET_flood → HTB class 1:15
+[2025-12-04 17:47:54] === SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ===
+[2025-12-04 17:47:54] Target URL: 172.24.4.117
+[2025-12-04 17:47:54] Interface: br-ex
+[2025-12-04 17:47:54] Duration: 3600s
+[2025-12-04 17:47:54] Compression: 24x
+[2025-12-04 17:47:54] Mode: python-compressed
+[2025-12-04 17:47:54] Max Concurrent: 20 users
+[2025-12-04 17:47:54] ERROR: Invalid URL. Must start with http:// or https://
+[2025-12-04 17:47:54] === CLEANUP STARTED ===
+[2025-12-04 17:47:54] === CLEANUP COMPLETED ===
+[2025-12-04 17:47:55]   ✗ Failed to start
+[2025-12-04 17:47:58] Starting: simulator_HTTP_POST_flood → HTB class 1:16
+[2025-12-04 17:47:58] === SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ===
+[2025-12-04 17:47:58] Target URL: 172.24.4.117
+[2025-12-04 17:47:58] Interface: br-ex
+[2025-12-04 17:47:58] Duration: 3600s
+[2025-12-04 17:47:58] Compression: 24x
+[2025-12-04 17:47:58] Mode: python-compressed
+[2025-12-04 17:47:58] Max Concurrent: 20 users
+[2025-12-04 17:47:58] ERROR: Invalid URL. Must start with http:// or https://
+[2025-12-04 17:47:58] === CLEANUP STARTED ===
+[2025-12-04 17:47:58] === CLEANUP COMPLETED ===
+[2025-12-04 17:47:59]   ✗ Failed to start
+[2025-12-04 17:48:02] ERROR: No vectors started successfully
+[2025-12-04 17:48:02] === CLEANUP STARTED ===
+[2025-12-04 17:48:02] Removing HTB qdisc from br-ex
+[2025-12-04 17:48:02] === CLEANUP COMPLETED ===
 (base) minh@vm:~$ 
+
