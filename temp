@@ -1,3 +1,70 @@
+
+
+(base) minh@vm:~$ sudo ovs-vsctl show
+0be67ea3-361a-47b5-9001-1b2aeba57eb5
+    Manager "ptcp:6640:127.0.0.1"
+        is_connected: true
+    Bridge br-ex
+        Port br-ex
+            Interface br-ex
+                type: internal
+        Port patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
+            Interface patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
+                type: patch
+                options: {peer=patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c}
+    Bridge br-int
+        fail_mode: secure
+        datapath_type: system
+        Port o-hm0
+            Interface o-hm0
+                type: internal
+        Port patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
+            Interface patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
+                type: patch
+                options: {peer=patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int}
+        Port tap28d63b67-f0
+            Interface tap28d63b67-f0
+        Port tapb1b8114b-90
+            Interface tapb1b8114b-90
+        Port br-int
+            Interface br-int
+                type: internal
+        Port tap0220c62b-ab
+            Interface tap0220c62b-ab
+                error: "could not open network device tap0220c62b-ab (No such device)"
+        Port tap13ae14ff-60
+            Interface tap13ae14ff-60
+    ovs_version: "2.17.9"
+(base) minh@vm:~$ #!/bin/bash
+
+# Tạo 5 veth pairs
+sudo ip link add veth-ack type veth peer name vpeer-ack
+sudo ip link add veth-syn type veth peer name vpeer-syn
+sudo ip link add veth-udp type veth peer name vpeer-udp
+sudo ip link add veth-icmp type veth peer name vpeer-icmp
+sudo ip link add veth-frag type veth peer name vpeer-frag
+
+# Cấp IP trong subnet 172.24.4.0/24
+sudo ip addr add 172.24.4.10/24 dev veth-ack
+sudo ip addr add 172.24.4.20/24 dev veth-syn
+sudo ip addr add 172.24.4.30/24 dev veth-udp
+sudo ip addr add 172.24.4.40/24 dev veth-icmp
+sudo ip addr add 172.24.4.50/24 dev veth-frag
+
+# Bật tất cả interfaces
+sudo ip link set veth-ack up
+sudo ip link set vpeer-ack up
+sudo ip link set veth-syn up
+sudo ip link set vpeer-syn up
+sudo ip link set veth-udp up
+sudo ip link set vpeer-udp up
+sudo ip link set veth-icmp up
+sudo ip link set vpeer-icmp up
+sudo ip link set veth-frag up
+sudo ip link set vpeer-frag up
+
+echo "✓ Veth pairs created and configured"
+✓ Veth pairs created and configured
 (base) minh@vm:~$ # Thêm các vpeer vào br-ex
 sudo ovs-vsctl add-port br-ex vpeer-ack
 sudo ovs-vsctl add-port br-ex vpeer-syn
@@ -31,3 +98,26 @@ sudo ovs-vsctl show
                 options: {peer=patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c}
         Port vpeer-udp
             Interface vpeer-udp
+    Bridge br-int
+        fail_mode: secure
+        datapath_type: system
+        Port o-hm0
+            Interface o-hm0
+                type: internal
+        Port patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
+            Interface patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
+                type: patch
+                options: {peer=patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int}
+        Port tap28d63b67-f0
+            Interface tap28d63b67-f0
+        Port tapb1b8114b-90
+            Interface tapb1b8114b-90
+        Port br-int
+            Interface br-int
+                type: internal
+        Port tap0220c62b-ab
+            Interface tap0220c62b-ab
+                error: "could not open network device tap0220c62b-ab (No such device)"
+        Port tap13ae14ff-60
+            Interface tap13ae14ff-60
+    ovs_version: "2.17.9"
