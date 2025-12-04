@@ -31,26 +31,3 @@ sudo ovs-vsctl show
                 options: {peer=patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c}
         Port vpeer-udp
             Interface vpeer-udp
-    Bridge br-int
-        fail_mode: secure
-        datapath_type: system
-        Port o-hm0
-            Interface o-hm0
-                type: internal
-        Port patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
-            Interface patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
-                type: patch
-                options: {peer=patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int}
-        Port tap28d63b67-f0
-            Interface tap28d63b67-f0
-        Port tapb1b8114b-90
-            Interface tapb1b8114b-90
-        Port br-int
-            Interface br-int
-                type: internal
-        Port tap0220c62b-ab
-            Interface tap0220c62b-ab
-                error: "could not open network device tap0220c62b-ab (No such device)"
-        Port tap13ae14ff-60
-            Interface tap13ae14ff-60
-    ovs_version: "2.17.9"
