@@ -1,22 +1,35 @@
-(base) minh@vm:~$ # 1. Xem IP của br-ex
-ip addr show br-ex
-
-# 2. Xem routing table
-ip route | grep br-ex
-
-# 3. Xem br-ex có port nào
-brctl show br-ex
-
-# 4. Xem IP của OpenStack instance (target)
-# Nếu instance IP là 10.0.0.x thì phải route thế nào?
-5: br-ex: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
-    link/ether de:74:f0:01:c5:43 brd ff:ff:ff:ff:ff:ff
-    inet 172.24.4.1/24 scope global br-ex
-       valid_lft forever preferred_lft forever
-    inet6 2001:db8::2/64 scope global 
-       valid_lft forever preferred_lft forever
-    inet6 fe80::dc74:f0ff:fe01:c543/64 scope link 
-       valid_lft forever preferred_lft forever
-172.24.4.0/24 dev br-ex proto kernel scope link src 172.24.4.1 
-device br-ex is not a bridge!
-
+(base) minh@vm:~$ sudo ovs-vsctl show
+0be67ea3-361a-47b5-9001-1b2aeba57eb5
+    Manager "ptcp:6640:127.0.0.1"
+        is_connected: true
+    Bridge br-ex
+        Port br-ex
+            Interface br-ex
+                type: internal
+        Port patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
+            Interface patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
+                type: patch
+                options: {peer=patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c}
+    Bridge br-int
+        fail_mode: secure
+        datapath_type: system
+        Port o-hm0
+            Interface o-hm0
+                type: internal
+        Port patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
+            Interface patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
+                type: patch
+                options: {peer=patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int}
+        Port tap28d63b67-f0
+            Interface tap28d63b67-f0
+        Port tapb1b8114b-90
+            Interface tapb1b8114b-90
+        Port br-int
+            Interface br-int
+                type: internal
+        Port tap0220c62b-ab
+            Interface tap0220c62b-ab
+                error: "could not open network device tap0220c62b-ab (No such device)"
+        Port tap13ae14ff-60
+            Interface tap13ae14ff-60
+    ovs_version: "2.17.9"
