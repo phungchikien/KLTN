@@ -1,4 +1,15 @@
-(base) minh@vm:~$ sudo ovs-vsctl show
+(base) minh@vm:~$ # Thêm các vpeer vào br-ex
+sudo ovs-vsctl add-port br-ex vpeer-ack
+sudo ovs-vsctl add-port br-ex vpeer-syn
+sudo ovs-vsctl add-port br-ex vpeer-udp
+sudo ovs-vsctl add-port br-ex vpeer-icmp
+sudo ovs-vsctl add-port br-ex vpeer-frag
+
+echo "✓ Ports added to br-ex"
+
+# Kiểm tra
+sudo ovs-vsctl show
+✓ Ports added to br-ex
 0be67ea3-361a-47b5-9001-1b2aeba57eb5
     Manager "ptcp:6640:127.0.0.1"
         is_connected: true
@@ -6,10 +17,20 @@
         Port br-ex
             Interface br-ex
                 type: internal
+        Port vpeer-icmp
+            Interface vpeer-icmp
+        Port vpeer-ack
+            Interface vpeer-ack
+        Port vpeer-syn
+            Interface vpeer-syn
+        Port vpeer-frag
+            Interface vpeer-frag
         Port patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
             Interface patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
                 type: patch
                 options: {peer=patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c}
+        Port vpeer-udp
+            Interface vpeer-udp
     Bridge br-int
         fail_mode: secure
         datapath_type: system
