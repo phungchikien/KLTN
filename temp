@@ -1,123 +1,131 @@
-
-
-(base) minh@vm:~$ sudo ovs-vsctl show
-0be67ea3-361a-47b5-9001-1b2aeba57eb5
-    Manager "ptcp:6640:127.0.0.1"
-        is_connected: true
-    Bridge br-ex
-        Port br-ex
-            Interface br-ex
-                type: internal
-        Port patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
-            Interface patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
-                type: patch
-                options: {peer=patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c}
-    Bridge br-int
-        fail_mode: secure
-        datapath_type: system
-        Port o-hm0
-            Interface o-hm0
-                type: internal
-        Port patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
-            Interface patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
-                type: patch
-                options: {peer=patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int}
-        Port tap28d63b67-f0
-            Interface tap28d63b67-f0
-        Port tapb1b8114b-90
-            Interface tapb1b8114b-90
-        Port br-int
-            Interface br-int
-                type: internal
-        Port tap0220c62b-ab
-            Interface tap0220c62b-ab
-                error: "could not open network device tap0220c62b-ab (No such device)"
-        Port tap13ae14ff-60
-            Interface tap13ae14ff-60
-    ovs_version: "2.17.9"
-(base) minh@vm:~$ #!/bin/bash
-
-# Tạo 5 veth pairs
-sudo ip link add veth-ack type veth peer name vpeer-ack
-sudo ip link add veth-syn type veth peer name vpeer-syn
-sudo ip link add veth-udp type veth peer name vpeer-udp
-sudo ip link add veth-icmp type veth peer name vpeer-icmp
-sudo ip link add veth-frag type veth peer name vpeer-frag
-
-# Cấp IP trong subnet 172.24.4.0/24
-sudo ip addr add 172.24.4.10/24 dev veth-ack
-sudo ip addr add 172.24.4.20/24 dev veth-syn
-sudo ip addr add 172.24.4.30/24 dev veth-udp
-sudo ip addr add 172.24.4.40/24 dev veth-icmp
-sudo ip addr add 172.24.4.50/24 dev veth-frag
-
-# Bật tất cả interfaces
-sudo ip link set veth-ack up
-sudo ip link set vpeer-ack up
-sudo ip link set veth-syn up
-sudo ip link set vpeer-syn up
-sudo ip link set veth-udp up
-sudo ip link set vpeer-udp up
-sudo ip link set veth-icmp up
-sudo ip link set vpeer-icmp up
-sudo ip link set veth-frag up
-sudo ip link set vpeer-frag up
-
-echo "✓ Veth pairs created and configured"
-✓ Veth pairs created and configured
-(base) minh@vm:~$ # Thêm các vpeer vào br-ex
-sudo ovs-vsctl add-port br-ex vpeer-ack
-sudo ovs-vsctl add-port br-ex vpeer-syn
-sudo ovs-vsctl add-port br-ex vpeer-udp
-sudo ovs-vsctl add-port br-ex vpeer-icmp
-sudo ovs-vsctl add-port br-ex vpeer-frag
-
-echo "✓ Ports added to br-ex"
-
-# Kiểm tra
-sudo ovs-vsctl show
-✓ Ports added to br-ex
-0be67ea3-361a-47b5-9001-1b2aeba57eb5
-    Manager "ptcp:6640:127.0.0.1"
-        is_connected: true
-    Bridge br-ex
-        Port br-ex
-            Interface br-ex
-                type: internal
-        Port vpeer-icmp
-            Interface vpeer-icmp
-        Port vpeer-ack
-            Interface vpeer-ack
-        Port vpeer-syn
-            Interface vpeer-syn
-        Port vpeer-frag
-            Interface vpeer-frag
-        Port patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
-            Interface patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int
-                type: patch
-                options: {peer=patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c}
-        Port vpeer-udp
-            Interface vpeer-udp
-    Bridge br-int
-        fail_mode: secure
-        datapath_type: system
-        Port o-hm0
-            Interface o-hm0
-                type: internal
-        Port patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
-            Interface patch-br-int-to-provnet-2a32795f-2864-4a86-95f5-56ed5154541c
-                type: patch
-                options: {peer=patch-provnet-2a32795f-2864-4a86-95f5-56ed5154541c-to-br-int}
-        Port tap28d63b67-f0
-            Interface tap28d63b67-f0
-        Port tapb1b8114b-90
-            Interface tapb1b8114b-90
-        Port br-int
-            Interface br-int
-                type: internal
-        Port tap0220c62b-ab
-            Interface tap0220c62b-ab
-                error: "could not open network device tap0220c62b-ab (No such device)"
-        Port tap13ae14ff-60
-            Interface tap13ae14ff-60
-    ovs_version: "2.17.9"
+[2025-12-04 15:47:50] Initializing root HTB qdisc on br-ex
+Warning: sch_htb: quantum of class 10099 is big. Consider r2q change.
+[2025-12-04 15:47:50] Starting simulator_ACK_htb.sh
+[2025-12-04 15:47:50] Starting simulator_SYN_htb.sh
+[2025-12-04 15:47:50] Starting simulator_UDP_htb.sh
+[2025-12-04 15:47:50] Starting simulator_ICMP_htb.sh
+./simulator_SYN_htb.sh: line 658: syntax error near unexpected token `newline'
+./simulator_SYN_htb.sh: line 658: `        *'
+[2025-12-04 15:47:50] Starting simulator_IP_Fragment_htb.sh
+./simulator_UDP_htb.sh: line 658: syntax error near unexpected token `newline'
+./simulator_UDP_htb.sh: line 658: `        *'
+[2025-12-04 15:47:50] === PYTHON-ENHANCED HPING3 TRAFFIC SIMULATOR ===
+[2025-12-04 15:47:50] === CLEANUP STARTED ===
+./simulator_ICMP_htb.sh: line 637: syntax error: unexpected end of file
+[2025-12-04 15:47:50] Starting simulator_HTTP_GET_flood.sh
+[2025-12-04 15:47:50] === CLEANUP STARTED ===
+[2025-12-04 15:47:50] === CLEANUP COMPLETED ===
+[2025-12-04 15:47:50] Target: 172.24.4.117
+[2025-12-04 15:47:50] Starting simulator_HTTP_POST_flood.sh
+[2025-12-04 15:47:50] Waiting for all processes...
+[2025-12-04 15:47:50] === CLEANUP COMPLETED ===
+[2025-12-04 15:47:50] Interface: br-ex
+[2025-12-04 15:47:50] === CLEANUP STARTED ===
+[2025-12-04 15:47:50] === PYTHON-ENHANCED HPING3 ACK TRAFFIC SIMULATOR ===
+[2025-12-04 15:47:50] Duration: 3600s
+[2025-12-04 15:47:50] === CLEANUP COMPLETED ===
+[2025-12-04 15:47:50] === SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ===
+[2025-12-04 15:47:50] === SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ===
+[2025-12-04 15:47:50] Target: 172.24.4.117
+[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
+[2025-12-04 15:47:50] Compression: 24x
+[2025-12-04 15:47:50] Interface: br-ex
+[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
+[2025-12-04 15:47:50] Interface: br-ex
+[2025-12-04 15:47:50] Mode: python-compressed
+[2025-12-04 15:47:50] Duration: 3600s
+[2025-12-04 15:47:50] Interface: br-ex
+[2025-12-04 15:47:50] Duration: 3600s
+[2025-12-04 15:47:50] Compression: 24x
+[2025-12-04 15:47:50] Duration: 3600s
+[2025-12-04 15:47:50] Compression: 24x
+[2025-12-04 15:47:50] Mode: python-compressed
+[2025-12-04 15:47:50] Compression: 24x
+[2025-12-04 15:47:50] Mode: python-compressed
+[2025-12-04 15:47:50] Mode: python-compressed
+[2025-12-04 15:47:50] Max Concurrent: 20 users
+[2025-12-04 15:47:50] HTB Mode: DISABLED (Standalone)
+[2025-12-04 15:47:50] Max Concurrent: 20 users
+[2025-12-04 15:47:50] Python3 with math module: Available
+[2025-12-04 15:47:50] Python math calculator created successfully
+[2025-12-04 15:47:50] === PYTHON-ENHANCED TC QDISC SIMULATION ===
+[2025-12-04 15:47:50] Python3 with math module: Available
+[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
+[2025-12-04 15:47:50] Python3 with math module: Available
+[2025-12-04 15:47:50] Python3 with math module: Available
+[2025-12-04 15:47:50] Compression factor: 24x
+[2025-12-04 15:47:50] Custom Siege RC created: /tmp/siege_custom_1764838070.rc
+[2025-12-04 15:47:50] Python math calculator created successfully
+[2025-12-04 15:47:50] Config: timeout=3s, failures=unlimited, connection=close
+[2025-12-04 15:47:50] Custom Siege RC created: /tmp/siege_custom_1764838070.rc
+[2025-12-04 15:47:50] Config: timeout=3s, failures=unlimited, connection=close
+[2025-12-04 15:47:50] === PYTHON-ENHANCED TC SIMULATION (ACK) ===
+[2025-12-04 15:47:50] Python math calculator created successfully
+[2025-12-04 15:47:50] === SIEGE + TC QDISC SIMULATION ===
+[2025-12-04 15:47:50] Mode: STANDALONE
+[2025-12-04 15:47:50] Python math calculator created successfully
+[2025-12-04 15:47:50] Real duration: 3600s = Virtual: 24.0h
+[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
+[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
+[2025-12-04 15:47:50] Initializing TC HTB class on interface br-ex
+[2025-12-04 15:47:50] === SIEGE + TC QDISC SIMULATION ===
+[2025-12-04 15:47:50] Compression factor: 24x
+[2025-12-04 15:47:50] Compression factor: 24x
+Warning: sch_htb: quantum of class 10010 is small. Consider r2q change.
+[2025-12-04 15:47:50] Real duration: 3600s
+[2025-12-04 15:47:50] Standalone Mode: Initializing TBF qdisc on interface br-ex
+[2025-12-04 15:47:50] Math Engine: Python3 with accurate mathematical functions
+[2025-12-04 15:47:50] Starting hping3 flood to 172.24.4.117
+[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
+[2025-12-04 15:47:50] Compression factor: 24x
+[2025-12-04 15:47:50] Initializing TC HTB class on interface br-ex
+[2025-12-04 15:47:50] Real duration: 3600s
+[2025-12-04 15:47:50] hping3 started successfully (PID: 437850)
+RTNETLINK answers: No such file or directory
+Error: Parent Qdisc doesn't exists.
+We have an error talking to the kernel
+[2025-12-04 15:47:50] TC qdisc initialized successfully
+[2025-12-04 15:47:50] Target URL: http://172.24.4.117:80
+[2025-12-04 15:47:50] Starting hping3 ACK flood to 172.24.4.117
+[2025-12-04 15:47:50] Initializing TC HTB class on interface br-ex
+[2025-12-04 15:47:50] Starting Siege HTTP flood to http://172.24.4.117:80
+[2025-12-04 15:47:50] hping3 started successfully (PID: 437881)
+RTNETLINK answers: No such file or directory
+[2025-12-04 15:47:50] Max concurrent users: 20
+Error: Parent Qdisc doesn't exists.
+We have an error talking to the kernel
+[2025-12-04 15:47:50] Mode: Benchmark (no delays, maximum speed)
+[2025-12-04 15:47:50] Starting Siege HTTP flood to http://172.24.4.117:80
+[2025-12-04 15:47:50] Siege started successfully (PID: 437901)
+[2025-12-04 15:47:50] Max concurrent users: 20
+[2025-12-04 15:47:50] Siege is running at MAXIMUM CAPACITY
+[2025-12-04 15:47:50] TC qdisc will control actual traffic rate
+[2025-12-04 15:47:50] Mode: Benchmark (no delays, maximum speed)
+[2025-12-04 15:47:50] === HEALTH MONITOR STARTED ===
+[2025-12-04 15:47:50] ✓ Health monitor started (PID: 437955)
+[2025-12-04 15:47:50] Siege started successfully (PID: 437959)
+[2025-12-04 15:47:50] Check interval: 15s
+[2025-12-04 15:47:50] Siege is running at MAXIMUM CAPACITY
+[2025-12-04 15:47:50] Failure threshold: 3 consecutive failures
+[2025-12-04 15:47:50] TC qdisc will control actual traffic rate
+[2025-12-04 15:47:50] === HEALTH MONITOR STARTED ===
+[2025-12-04 15:47:50] ✓ Health monitor started (PID: 438032)
+[2025-12-04 15:47:50] Updating TC rate to 13kbit
+[2025-12-04 15:47:50] Check interval: 15s
+RTNETLINK answers: No such file or directory
+[2025-12-04 15:47:50] Failure threshold: 3 consecutive failures
+[2025-12-04 15:47:50] T+0s | Virtual: Day1 0:00 | PPS: 28 | BW: 13kbit [PYTHON]
+[2025-12-04 15:47:50] T+0s | Virtual: Day1 0:00 | PPS: 32 | BW: 15kbit [PYTHON]
+[2025-12-04 15:47:50] Updating TC rate to 740kbit
+RTNETLINK answers: No such file or directory
+[2025-12-04 15:47:50] T+0s | Day1 0:00 | RPS: 37 | BW: 740kbit | Siege: 437901
+[2025-12-04 15:47:50] Updating TC rate to 700kbit
+RTNETLINK answers: No such file or directory
+[2025-12-04 15:47:50] T+0s | Day1 0:00 | RPS: 35 | BW: 700kbit | Siege: 437959
+[2025-12-04 15:48:10] ⚠ Target check failed (1/3)
+[2025-12-04 15:48:10] ⚠ Target check failed (1/3)
+[2025-12-04 15:48:30] ⚠ Target check failed (2/3)
+[2025-12-04 15:48:30] ⚠ Target check failed (2/3)
+c^C
+(base) minh@vm:~$ ^C
+(base) minh@vm:~$ 
