@@ -18,7 +18,6 @@ resources:
     type: OS::Octavia::LoadBalancer
     properties:
       vip_subnet: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
-      flavor: f.single.medium
 
   # HTTP Listener và Pool
   listener:
