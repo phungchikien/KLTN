@@ -1,0 +1,290 @@
+heat_template_version: wallaby
+description: >
+  Base HOT for Sample VNF
+
+parameters:
+  nfv:
+    type: json
+
+  VDU1-scaling:
+    type: json
+
+  VDU1-scale-level:
+    type: number
+
+resources:
+  VDU1_scale_group:
+    type: OS::Heat::AutoScalingGroup
+    properties:
+      min_size: 1
+      max_size: 4
+      rolling_updates:
+        max_batch_size: 1 # update 1 instance at a time
+        min_in_service: 0 # at least 1 instance must be in service
+        pause_time: 200 # wait 200 seconds before updating the next instance
+      desired_capacity:
+        {
+          get_param:
+            [
+              VDU1-scaling,
+              scale-levels,
+              { get_param: VDU1-scale-level },
+              count,
+            ],
+        }
+      resource:
+        type: VDU1.yaml
+        properties:
+          flavor: { get_resource: VDU1_flavor }
+          image: { get_param: [nfv, VDU, VDU1, vcImageId] }
+          net1: { get_param: [nfv, CP, VDU1_CP1, network] }
+          subnet1: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
+          security_group: { get_param: [nfv, CP, VDU1_CP1, security_group] }
+          key_name: { get_param: [nfv, VDU, VDU1, key_name] }
+          metadata:
+            {
+              "metering.server_group": { get_resource: VDU1_server_group },
+              "stack_id": { get_param: "OS::stack_id" },
+              "stack_name": { get_param: "OS::stack_name" },
+            }
+          server_group: { get_resource: VDU1_server_group }
+          root_stack_id: { get_param: "OS::stack_id" }
+          lb_pool: { get_resource: pool }
+          lb_pool_tcp: { get_resource: pool_tcp }
+          lb_pool_udp: { get_resource: pool_udp }
+
+  VDU1_flavor:
+    type: OS::Nova::Flavor
+    properties:
+      ram:
+        {
+          get_param:
+            [VDU1-scaling, scale-levels, { get_param: VDU1-scale-level }, ram],
+        }
+      vcpus:
+        {
+          get_param:
+            [VDU1-scaling, scale-levels, { get_param: VDU1-scale-level }, vcpu],
+        }
+
+  VDU1_server_group:
+    type: OS::Nova::ServerGroup
+    properties:
+      policies: [soft-anti-affinity]
+      # affinity              all VMs on the same node
+      # anti affinity         each VM on a different node
+      # soft affinity         VMs on the same host if possible
+      # soft anti-affinity    VMs on separate hosts if possible
+
+  cpu_alarm_high:
+    type: OS::Aodh::GnocchiAggregationByResourcesAlarm
+    properties:
+      description: Scale up if CPU > threshold
+      metric: cpu ## important    cpu, not cpu_util
+      aggregation_method: rate:mean
+      granularity: 60
+      evaluation_periods: 5
+      threshold:
+        {
+          get_param:
+            [
+              VDU1-scaling,
+              scale-levels,
+              { get_param: VDU1-scale-level },
+              cpu_threshold_hi,
+            ],
+        }
+      resource_type: instance
+      comparison_operator: gt
+      alarm_actions:
+        if:
+          - { get_param: [VDU1-scaling, enable_autoscale] }
+          - - str_replace:
+                template: trust+url/stack_id/VDU1/SCALE_OUT
+                params:
+                  url: { get_param: [VDU1-scaling, alarm_post_url] }
+                  stack_id: { get_param: "OS::stack_id" }
+      query: # this part is working
+        str_replace:
+          template: '{"=": {"server_group": "$server_group"}}'
+          params:
+            $server_group: { get_resource: VDU1_server_group }
+
+  cpu_alarm_low:
+    type: OS::Aodh::GnocchiAggregationByResourcesAlarm
+    properties:
+      description: Scale down if CPU < threshold
+      metric: cpu
+      aggregation_method: rate:mean
+      granularity: 60
+      evaluation_periods: 5
+      threshold:
+        {
+          get_param:
+            [
+              VDU1-scaling,
+              scale-levels,
+              { get_param: VDU1-scale-level },
+              cpu_threshold_lo,
+            ],
+        }
+      resource_type: instance
+      comparison_operator: lt
+      alarm_actions:
+        if:
+          - { get_param: [VDU1-scaling, enable_autoscale] }
+          - - str_replace:
+                template: trust+url/stack_id/VDU1/SCALE_IN
+                params:
+                  url: { get_param: [VDU1-scaling, alarm_post_url] }
+                  stack_id: { get_param: "OS::stack_id" }
+      query:
+        str_replace:
+          template: '{"=": {"server_group": "$server_group"}}'
+          params:
+            $server_group: { get_resource: VDU1_server_group }
+
+  # Load Balancer
+  lb:
+    type: OS::Octavia::LoadBalancer
+    properties:
+      vip_subnet: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
+      flavor: f.single.medium
+
+  # HTTP Listener và Pool
+  listener:
+    type: OS::Octavia::Listener
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: HTTP
+      protocol_port: 80
+
+  pool:
+    type: OS::Octavia::Pool
+    properties:
+      listener: { get_resource: listener }
+      lb_algorithm: ROUND_ROBIN
+      protocol: HTTP
+
+  lb_monitor:
+    type: OS::Octavia::HealthMonitor
+    properties:
+      pool: { get_resource: pool }
+      type: TCP
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # TCP Listener và Pool
+  listener_tcp:
+    type: OS::Octavia::Listener
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: TCP
+      protocol_port: 8080
+
+  pool_tcp:
+    type: OS::Octavia::Pool
+    properties:
+      listener: { get_resource: listener_tcp }
+      lb_algorithm: ROUND_ROBIN
+      protocol: TCP
+
+  lb_monitor_tcp:
+    type: OS::Octavia::HealthMonitor
+    properties:
+      pool: { get_resource: pool_tcp }
+      type: TCP
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # UDP Listener và Pool
+  listener_udp:
+    type: OS::Octavia::Listener
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: UDP
+      protocol_port: 53
+
+  pool_udp:
+    type: OS::Octavia::Pool
+    properties:
+      listener: { get_resource: listener_udp }
+      lb_algorithm: ROUND_ROBIN
+      protocol: UDP
+
+  lb_monitor_udp:
+    type: OS::Octavia::HealthMonitor
+    properties:
+      pool: { get_resource: pool_udp }
+      type: UDP-CONNECT
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # Floating IP cho Load Balancer
+  lb_floating:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: public
+      port_id: { get_attr: [lb, vip_port_id] }
+
+outputs:
+  website_url:
+    value:
+      str_replace:
+        template: http://host/
+        params:
+          host: { get_attr: [lb_floating, floating_ip_address] }
+    description: >
+      This URL is the "external" URL that can be used to access the
+      Wordpress site.
+
+  lb_vip_address:
+    value: { get_attr: [lb, vip_address] }
+    description: Load Balancer VIP address
+
+  lb_floating_ip:
+    value: { get_attr: [lb_floating, floating_ip_address] }
+    description: Load Balancer floating IP address
+
+  http_endpoint:
+    value:
+      str_replace:
+        template: http://host:80
+        params:
+          host: { get_attr: [lb_floating, floating_ip_address] }
+    description: HTTP endpoint (port 80)
+
+  tcp_endpoint:
+    value:
+      str_replace:
+        template: host:8080
+        params:
+          host: { get_attr: [lb_floating, floating_ip_address] }
+    description: TCP endpoint (port 8080)
+
+  udp_endpoint:
+    value:
+      str_replace:
+        template: host:53
+        params:
+          host: { get_attr: [lb_floating, floating_ip_address] }
+    description: UDP endpoint (port 53)
+
+  VDU1_server_group:
+    value: { get_resource: VDU1_server_group }
+    description: VDU1 server group
+
+  scale_group_instance_ids:
+    description: "instance ids of VDU1 scale group instances"
+    value: { get_attr: [VDU1_scale_group, outputs_list, instance_id] }
+
+  scale_group_private_ips:
+    description: "private ips of VDU1 scale group instances"
+    value: { get_attr: [VDU1_scale_group, outputs_list, vdu1_private_ip] }
+
+  scale_group_floating_ips:
+    description: "floating ips of VDU1 scale group instances"
+    value: { get_attr: [VDU1_scale_group, outputs_list, vdu1_floating_ip] }
