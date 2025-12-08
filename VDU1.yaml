@@ -51,11 +51,7 @@ resources:
     depends_on: [VDU1_CP1]
     properties:
       flavor: { get_param: flavor }
-      name:
-        str_replace:
-          template: VDU1-$last
-          params:
-            $last: { get_attr: [number, value, 3] }
+      name: VDU1
       # image: { get_param: image } # remmember to delete volumes attached to the instance
       key_name: { get_param: key_name }
       metadata: { get_param: metadata }
@@ -108,12 +104,6 @@ resources:
 
   wait_handle:
     type: OS::Heat::WaitConditionHandle
-
-  number:
-    type: OS::Heat::Value
-    properties:
-      value:
-        str_split: [".", { get_attr: [VDU1_floatingIP, floating_ip_address] }]
 
   # extVL with numDynamicAddresses and subnet
   VDU1_CP1:
