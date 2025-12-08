@@ -13,7 +13,104 @@ parameters:
     type: number
 
 resources:
-  VDU1_scale_group:
+  # Load Balancer - TẠO TRƯỚC
+  lb:
+    type: OS::Octavia::LoadBalancer
+    properties:
+      vip_subnet: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
+      flavor: f.single.medium
+
+  # HTTP Listener và Pool
+  listener:
+    type: OS::Octavia::Listener
+    depends_on: lb
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: HTTP
+      protocol_port: 80
+
+  pool:
+    type: OS::Octavia::Pool
+    depends_on: listener
+    properties:
+      listener: { get_resource: listener }
+      lb_algorithm: ROUND_ROBIN
+      protocol: HTTP
+
+  lb_monitor:
+    type: OS::Octavia::HealthMonitor
+    depends_on: pool
+    properties:
+      pool: { get_resource: pool }
+      type: TCP
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # TCP Listener và Pool
+  listener_tcp:
+    type: OS::Octavia::Listener
+    depends_on: lb
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: TCP
+      protocol_port: 8080
+
+  pool_tcp:
+    type: OS::Octavia::Pool
+    depends_on: listener_tcp
+    properties:
+      listener: { get_resource: listener_tcp }
+      lb_algorithm: ROUND_ROBIN
+      protocol: TCP
+
+  lb_monitor_tcp:
+    type: OS::Octavia::HealthMonitor
+    depends_on: pool_tcp
+    properties:
+      pool: { get_resource: pool_tcp }
+      type: TCP
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # UDP Listener và Pool
+  listener_udp:
+    type: OS::Octavia::Listener
+    depends_on: lb
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: UDP
+      protocol_port: 53
+
+  pool_udp:
+    type: OS::Octavia::Pool
+    depends_on: listener_udp
+    properties:
+      listener: { get_resource: listener_udp }
+      lb_algorithm: ROUND_ROBIN
+      protocol: UDP
+
+  lb_monitor_udp:
+    type: OS::Octavia::HealthMonitor
+    depends_on: pool_udp
+    properties:
+      pool: { get_resource: pool_udp }
+      type: UDP-CONNECT
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # Floating IP cho Load Balancer
+  lb_floating:
+    type: OS::Neutron::FloatingIP
+    depends_on: lb
+    properties:
+      floating_network_id: public
+      port_id: { get_attr: [lb, vip_port_id] }
+
+  # Flavor và Server Group
+  VDU1_flavor:
     type: OS::Heat::AutoScalingGroup
     properties:
       min_size: 1
@@ -50,6 +147,8 @@ resources:
           server_group: { get_resource: VDU1_server_group }
           root_stack_id: { get_param: "OS::stack_id" }
           lb_pool: { get_resource: pool }
+          lb_pool_tcp: { get_resource: pool_tcp }
+          lb_pool_udp: { get_resource: pool_udp }
 
   VDU1_flavor:
     type: OS::Nova::Flavor
@@ -110,6 +209,7 @@ resources:
 
   cpu_alarm_low:
     type: OS::Aodh::GnocchiAggregationByResourcesAlarm
+    depends_on: VDU1_server_group
     properties:
       description: Scale down if CPU < threshold
       metric: cpu
@@ -141,92 +241,6 @@ resources:
           template: '{"=": {"server_group": "$server_group"}}'
           params:
             $server_group: { get_resource: VDU1_server_group }
-
-  # Load Balancer
-  lb:
-    type: OS::Octavia::LoadBalancer
-    properties:
-      vip_subnet: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
-      flavor: f.single.medium
-
-  # HTTP Listener và Pool
-  listener_http:
-    type: OS::Octavia::Listener
-    properties:
-      loadbalancer: { get_resource: lb }
-      protocol: HTTP
-      protocol_port: 80
-
-  pool_http:
-    type: OS::Octavia::Pool
-    properties:
-      listener: { get_resource: listener_http }
-      lb_algorithm: ROUND_ROBIN
-      protocol: HTTP
-
-  lb_monitor_http:
-    type: OS::Octavia::HealthMonitor
-    properties:
-      pool: { get_resource: pool_http }
-      type: TCP
-      delay: 5
-      max_retries: 5
-      timeout: 5
-
-  # TCP Listener và Pool
-  listener_tcp:
-    type: OS::Octavia::Listener
-    properties:
-      loadbalancer: { get_resource: lb }
-      protocol: TCP
-      protocol_port: 8080
-
-  pool_tcp:
-    type: OS::Octavia::Pool
-    properties:
-      listener: { get_resource: listener_tcp }
-      lb_algorithm: ROUND_ROBIN
-      protocol: TCP
-
-  lb_monitor_tcp:
-    type: OS::Octavia::HealthMonitor
-    properties:
-      pool: { get_resource: pool_tcp }
-      type: TCP
-      delay: 5
-      max_retries: 5
-      timeout: 5
-
-  # UDP Listener và Pool
-  listener_udp:
-    type: OS::Octavia::Listener
-    properties:
-      loadbalancer: { get_resource: lb }
-      protocol: UDP
-      protocol_port: 53
-
-  pool_udp:
-    type: OS::Octavia::Pool
-    properties:
-      listener: { get_resource: listener_udp }
-      lb_algorithm: ROUND_ROBIN
-      protocol: UDP
-
-  lb_monitor_udp:
-    type: OS::Octavia::HealthMonitor
-    properties:
-      pool: { get_resource: pool_udp }
-      type: UDP-CONNECT
-      delay: 5
-      max_retries: 5
-      timeout: 5
-
-  # Floating IP cho Load Balancer
-  lb_floating:
-    type: OS::Neutron::FloatingIP
-    properties:
-      floating_network_id: public
-      port_id: { get_attr: [lb, vip_port_id] }
 
 outputs:
   website_url:
