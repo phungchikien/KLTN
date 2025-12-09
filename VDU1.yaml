@@ -15,14 +15,12 @@ parameters:
   subnet1:
     type: string
     default: private-subnet
-  lb_pool:
+  lb_pool_http:
     type: string
   lb_pool_tcp:
     type: string
-    default: ""
   lb_pool_udp:
     type: string
-    default: ""
 
   security_group:
     type: string
@@ -42,16 +40,18 @@ parameters:
 
 conditions:
   is_standalone: { equals: [{ get_param: root_stack_id }, ""] }
-  has_tcp_pool: { not: { equals: [{ get_param: lb_pool_tcp }, ""] } }
-  has_udp_pool: { not: { equals: [{ get_param: lb_pool_udp }, ""] } }
 
 resources:
   VDU1:
     type: OS::Nova::Server
-    depends_on: [VDU1_CP1]
+    depends_on: [VDU1_CP1, number]
     properties:
       flavor: { get_param: flavor }
-      name: VDU1
+      name:
+        str_replace:
+          template: VDU1-$last
+          params:
+            $last: { get_attr: [number, value, 3] }
       # image: { get_param: image } # remmember to delete volumes attached to the instance
       key_name: { get_param: key_name }
       metadata: { get_param: metadata }
@@ -105,6 +105,12 @@ resources:
   wait_handle:
     type: OS::Heat::WaitConditionHandle
 
+  number:
+    type: OS::Heat::Value
+    properties:
+      value:
+        str_split: [".", { get_attr: [VDU1_floatingIP, floating_ip_address] }]
+
   # extVL with numDynamicAddresses and subnet
   VDU1_CP1:
     type: OS::Neutron::Port
@@ -114,36 +120,31 @@ resources:
         - subnet: { get_param: subnet1 }
       security_groups: [{ get_param: security_group }]
 
-  # HTTP Load Balancer Member
-  LB_member:
+  LB_member_http:
     type: OS::Octavia::PoolMember
     depends_on: [wait_for_instance, VDU1]
     properties:
-      pool: { get_param: lb_pool }
+      pool: { get_param: lb_pool_http }
       address: { get_attr: [VDU1_CP1, fixed_ips, 0, ip_address] }
       protocol_port: 80
       subnet: { get_param: subnet1 }
 
-  # TCP Load Balancer Member
   LB_member_tcp:
     type: OS::Octavia::PoolMember
     depends_on: [wait_for_instance, VDU1]
-    condition: has_tcp_pool
     properties:
       pool: { get_param: lb_pool_tcp }
       address: { get_attr: [VDU1_CP1, fixed_ips, 0, ip_address] }
-      protocol_port: 8080
+      protocol_port: 8888
       subnet: { get_param: subnet1 }
 
-  # UDP Load Balancer Member
   LB_member_udp:
     type: OS::Octavia::PoolMember
     depends_on: [wait_for_instance, VDU1]
-    condition: has_udp_pool
     properties:
       pool: { get_param: lb_pool_udp }
       address: { get_attr: [VDU1_CP1, fixed_ips, 0, ip_address] }
-      protocol_port: 53
+      protocol_port: 9999
       subnet: { get_param: subnet1 }
 
   # Floating IP, remove this when deploying in a public cloud
@@ -162,27 +163,13 @@ resources:
 
 outputs:
   lb_member:
-    description: HTTP LB member details.
+    description: LB member details.
     value: { get_attr: [LB_member, show] }
-  lb_member_tcp:
-    description: TCP LB member details.
-    value:
-      if:
-        - has_tcp_pool
-        - { get_attr: [LB_member_tcp, show] }
-        - "Not configured"
-  lb_member_udp:
-    description: UDP LB member details.
-    value:
-      if:
-        - has_udp_pool
-        - { get_attr: [LB_member_udp, show] }
-        - "Not configured"
   instance_id:
     description: "ID of VDU1"
     value: { get_resource: VDU1 }
   vdu1_private_ip:
-    description: "Private IP of VDU1"
+    description: "Public IP of VDU1"
     value: { get_attr: [VDU1_CP1, fixed_ips, 0, ip_address] }
   vdu1_floating_ip:
     description: "Floating IP of VDU1"
