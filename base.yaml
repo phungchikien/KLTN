@@ -13,104 +13,12 @@ parameters:
     type: number
 
 resources:
-  # Load Balancer - TẠO TRƯỚC
-  lb:
-    type: OS::Octavia::LoadBalancer
-    properties:
-      vip_subnet: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
-
-  # HTTP Listener và Pool
-  listener:
-    type: OS::Octavia::Listener
-    depends_on: lb
-    properties:
-      loadbalancer: { get_resource: lb }
-      protocol: HTTP
-      protocol_port: 80
-
-  pool:
-    type: OS::Octavia::Pool
-    depends_on: listener
-    properties:
-      listener: { get_resource: listener }
-      lb_algorithm: ROUND_ROBIN
-      protocol: HTTP
-
-  lb_monitor:
-    type: OS::Octavia::HealthMonitor
-    depends_on: pool
-    properties:
-      pool: { get_resource: pool }
-      type: TCP
-      delay: 5
-      max_retries: 5
-      timeout: 5
-
-  # TCP Listener và Pool
-  listener_tcp:
-    type: OS::Octavia::Listener
-    depends_on: lb
-    properties:
-      loadbalancer: { get_resource: lb }
-      protocol: TCP
-      protocol_port: 8080
-
-  pool_tcp:
-    type: OS::Octavia::Pool
-    depends_on: listener_tcp
-    properties:
-      listener: { get_resource: listener_tcp }
-      lb_algorithm: ROUND_ROBIN
-      protocol: TCP
-
-  lb_monitor_tcp:
-    type: OS::Octavia::HealthMonitor
-    depends_on: pool_tcp
-    properties:
-      pool: { get_resource: pool_tcp }
-      type: TCP
-      delay: 5
-      max_retries: 5
-      timeout: 5
-
-  # UDP Listener và Pool
-  listener_udp:
-    type: OS::Octavia::Listener
-    depends_on: lb
-    properties:
-      loadbalancer: { get_resource: lb }
-      protocol: UDP
-      protocol_port: 53
-
-  pool_udp:
-    type: OS::Octavia::Pool
-    depends_on: listener_udp
-    properties:
-      listener: { get_resource: listener_udp }
-      lb_algorithm: ROUND_ROBIN
-      protocol: UDP
-
-  lb_monitor_udp:
-    type: OS::Octavia::HealthMonitor
-    depends_on: pool_udp
-    properties:
-      pool: { get_resource: pool_udp }
-      type: UDP-CONNECT
-      delay: 5
-      max_retries: 5
-      timeout: 5
-
-  # Floating IP cho Load Balancer
-  lb_floating:
-    type: OS::Neutron::FloatingIP
-    depends_on: lb
-    properties:
-      floating_network_id: public
-      port_id: { get_attr: [lb, vip_port_id] }
-
-  # Flavor và Server Group
-  VDU1_flavor:
+  VDU1_scale_group:
     type: OS::Heat::AutoScalingGroup
+      depends_on:
+       - pool_http
+       - pool_tcp
+       - pool_udp
     properties:
       min_size: 1
       max_size: 4
@@ -145,9 +53,9 @@ resources:
             }
           server_group: { get_resource: VDU1_server_group }
           root_stack_id: { get_param: "OS::stack_id" }
-          lb_pool: { get_resource: pool }
-          lb_pool_tcp: { get_resource: pool_tcp }
-          lb_pool_udp: { get_resource: pool_udp }
+          lb_pool_http: { get_resource: pool_http }
+  	  lb_pool_tcp: { get_resource: pool_tcp }
+ 	  lb_pool_udp: { get_resource: pool_udp }
 
   VDU1_flavor:
     type: OS::Nova::Flavor
@@ -171,6 +79,25 @@ resources:
       # anti affinity         each VM on a different node
       # soft affinity         VMs on the same host if possible
       # soft anti-affinity    VMs on separate hosts if possible
+
+  #? scaling by external services, so dont need scaling policies
+  # VDU1_scale_out:
+  #   type: OS::Heat::ScalingPolicy
+  #   properties:
+  #     scaling_adjustment: 1
+  #     cooldown: 1500
+  #     auto_scaling_group_id:
+  #       get_resource: VDU1_scale_group
+  #     adjustment_type: change_in_capacity
+
+  # VDU1_scale_in:
+  #   type: OS::Heat::ScalingPolicy
+  #   properties:
+  #     scaling_adjustment: -1
+  #     cooldown: 1500
+  #     auto_scaling_group_id:
+  #       get_resource: VDU1_scale_group
+  #     adjustment_type: change_in_capacity
 
   cpu_alarm_high:
     type: OS::Aodh::GnocchiAggregationByResourcesAlarm
@@ -208,7 +135,6 @@ resources:
 
   cpu_alarm_low:
     type: OS::Aodh::GnocchiAggregationByResourcesAlarm
-    depends_on: VDU1_server_group
     properties:
       description: Scale down if CPU < threshold
       metric: cpu
@@ -241,6 +167,90 @@ resources:
           params:
             $server_group: { get_resource: VDU1_server_group }
 
+ lb:
+    type: OS::Octavia::LoadBalancer
+    properties:
+      vip_subnet: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
+      flavor: f.single.medium
+
+  # HTTP Listener và Pool
+  listener_http:
+    type: OS::Octavia::Listener
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: HTTP
+      protocol_port: 80
+
+  pool_http:
+    type: OS::Octavia::Pool
+    properties:
+      listener: { get_resource: listener_http }
+      lb_algorithm: ROUND_ROBIN
+      protocol: HTTP
+
+  lb_monitor_http:
+    type: OS::Octavia::HealthMonitor
+    properties:
+      pool: { get_resource: pool_http }
+      type: HTTP
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # TCP Listener và Pool
+  listener_tcp:
+    type: OS::Octavia::Listener
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: TCP
+      protocol_port: 8888
+
+  pool_tcp:
+    type: OS::Octavia::Pool
+    properties:
+      listener: { get_resource: listener_tcp }
+      lb_algorithm: ROUND_ROBIN
+      protocol: TCP
+
+  lb_monitor_tcp:
+    type: OS::Octavia::HealthMonitor
+    properties:
+      pool: { get_resource: pool_tcp }
+      type: TCP
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  # UDP Listener và Pool
+  listener_udp:
+    type: OS::Octavia::Listener
+    properties:
+      loadbalancer: { get_resource: lb }
+      protocol: UDP
+      protocol_port: 9999
+
+  pool_udp:
+    type: OS::Octavia::Pool
+    properties:
+      listener: { get_resource: listener_udp }
+      lb_algorithm: ROUND_ROBIN
+      protocol: UDP
+
+  lb_monitor_udp:
+    type: OS::Octavia::HealthMonitor
+    properties:
+      pool: { get_resource: pool_udp }
+      type: UDP-CONNECT
+      delay: 5
+      max_retries: 5
+      timeout: 5
+
+  lb_floating:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: public
+      port_id: { get_attr: [lb, vip_port_id] }
+
 outputs:
   website_url:
     value:
@@ -251,38 +261,6 @@ outputs:
     description: >
       This URL is the "external" URL that can be used to access the
       Wordpress site.
-
-  lb_vip_address:
-    value: { get_attr: [lb, vip_address] }
-    description: Load Balancer VIP address
-
-  lb_floating_ip:
-    value: { get_attr: [lb_floating, floating_ip_address] }
-    description: Load Balancer floating IP address
-
-  http_endpoint:
-    value:
-      str_replace:
-        template: http://host:80
-        params:
-          host: { get_attr: [lb_floating, floating_ip_address] }
-    description: HTTP endpoint (port 80)
-
-  tcp_endpoint:
-    value:
-      str_replace:
-        template: host:8080
-        params:
-          host: { get_attr: [lb_floating, floating_ip_address] }
-    description: TCP endpoint (port 8080)
-
-  udp_endpoint:
-    value:
-      str_replace:
-        template: host:53
-        params:
-          host: { get_attr: [lb_floating, floating_ip_address] }
-    description: UDP endpoint (port 53)
 
   VDU1_server_group:
     value: { get_resource: VDU1_server_group }
@@ -299,3 +277,9 @@ outputs:
   scale_group_floating_ips:
     description: "floating ips of VDU1 scale group instances"
     value: { get_attr: [VDU1_scale_group, outputs_list, vdu1_floating_ip] }
+
+  # VDU1_scale_out_signal_url:
+  #   value: { get_attr: [VDU1_scale_out, signal_url] }
+
+  # VDU1_scale_in_signal_url:
+  #   value: { get_attr: [VDU1_scale_in, signal_url] }
