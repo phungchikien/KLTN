@@ -1,21 +1,22 @@
 #!/bin/bash
 
 # =================================================================
-#     SIEGE HTTP GET FLOOD SIMULATOR WITH TC QDISC CONTROL
+#     SIEGE HTTP POST FLOOD SIMULATOR WITH TC QDISC CONTROL
 #     + AUTO-RESTART ON TARGET REBOOT
+#     + SAFE TC QDISC DETECTION (NO INTERFERENCE)
 # =================================================================
 
 # Default parameters
-TARGET_URL="${1:-http://192.168.1.120:80}"
-INTERFACE="${2:-eth0}"
-DURATION="${3:-300}"
-TIME_COMPRESSION="${4:-72}"
-LOG_FILE="siege_http_get_flood_$(date +%Y%m%d_%H%M%S).log"
+TARGET_URL="${1:-http://172.24.4.32}"
+INTERFACE="${2:-br-ex}"
+DURATION="${3:-21600}"
+TIME_COMPRESSION="${4:-4}"
+LOG_FILE="siege_http_post_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
 # Config TC QDISC
 BURST_SIZE="500"
-LATENCY="5ms"
+LATENCY="100ms"
 MIN_RATE="1kbit"
 MAX_RATE="2mbit"
 
@@ -27,7 +28,11 @@ SIEGE_RC_FILE="/tmp/siege_custom_$(date +%s).rc"
 SIEGE_PID=""
 MONITOR_PID=""
 TC_ACTIVE=false
+TC_MANAGED_BY_US=false  # NEW: Track if we created the qdisc
 PYTHON_AVAILABLE=false
+
+SCRIPT_PID=$$
+PYTHON_CALCULATOR="/tmp/traffic_calculator_${SCRIPT_PID}.py"
 
 # Logging function
 log() {
@@ -60,22 +65,48 @@ cleanup() {
     # Failsafe: kill all siege
     pkill -9 siege 2>/dev/null
     
-    # Remove TC qdisc
-    if [ "$TC_ACTIVE" = true ]; then
-        log "Removing tc qdisc from interface $INTERFACE"
+    # Only remove TC qdisc if WE created it
+    if [ "$TC_MANAGED_BY_US" = true ]; then
+        log "Removing TC qdisc (created by this script)"
         tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
-        TC_ACTIVE=false
+    else
+        log "Leaving existing TC qdisc untouched"
     fi
     
     # Cleanup files
     rm -f "$SIEGE_RC_FILE"
-    rm -f /tmp/traffic_calculator.py
+    if [ -f "$PYTHON_CALCULATOR" ]; then
+        rm -f "$PYTHON_CALCULATOR"
+    fi
     
     log "=== CLEANUP COMPLETED ==="
     exit 0
 }
 
 trap cleanup EXIT INT TERM
+
+# NEW: Check if TC qdisc already exists
+check_existing_qdisc() {
+    local qdisc_info=$(tc qdisc show dev "$INTERFACE" 2>/dev/null | grep "qdisc" | head -n1)
+    
+    if [ -z "$qdisc_info" ]; then
+        log "ℹ No TC qdisc found on $INTERFACE"
+        return 1  # No qdisc exists
+    fi
+    
+    # Check if it's just the default qdisc (pfifo_fast, fq_codel, etc.)
+    if echo "$qdisc_info" | grep -qE "qdisc (pfifo_fast|fq_codel|noqueue|mq)"; then
+        log "ℹ Only default qdisc found on $INTERFACE: $qdisc_info"
+        return 1  # Default qdisc, we can replace it
+    fi
+    
+    # There's a configured qdisc (tbf, htb, etc.)
+    log "⚠ EXISTING QDISC DETECTED on $INTERFACE:"
+    log "   $qdisc_info"
+    log "   → Script will run WITHOUT TC control (passive mode)"
+    log "   → Siege traffic generation only, no bandwidth shaping"
+    return 0  # Qdisc exists, don't touch it
+}
 
 # Check Python
 check_python() {
@@ -102,7 +133,9 @@ check_python() {
 
 # Python calculator
 create_python_calculator() {
-    cat << 'PYTHON_SCRIPT' > /tmp/traffic_calculator.py
+    log "Creating Python calculator: $PYTHON_CALCULATOR"
+    
+    cat << 'PYTHON_SCRIPT' > "$PYTHON_CALCULATOR"
 #!/usr/bin/env python3
 import math
 import sys
@@ -118,7 +151,7 @@ def calculate_hourly_rate(hour, scale_factor=SCALE_FACTOR):
     base_level = 20
     
     traffic_factor = base_level + morning_peak + evening_peak + night_drop + daily_cycle
-    rps = max(30, traffic_factor * scale_factor)
+    rps = max(1, traffic_factor * scale_factor)
     
     return int(rps)
 
@@ -206,7 +239,7 @@ if __name__ == "__main__":
         sys.exit(1)
 PYTHON_SCRIPT
     
-    chmod +x /tmp/traffic_calculator.py
+    chmod +x "$PYTHON_CALCULATOR"
 }
 
 # Fallback math
@@ -239,7 +272,7 @@ calculate_simple_rate() {
 rps_to_bandwidth() {
     local rps=$1
     local avg_request_bytes=500
-    local avg_response_bytes=2000
+    local avg_response_bytes=1500
     local bytes_per_transaction=$((avg_request_bytes + avg_response_bytes))
     local bps=$(echo "scale=0; $rps * $bytes_per_transaction * 8" | bc -l)
     
@@ -262,14 +295,24 @@ rps_to_bandwidth() {
     fi
 }
 
-# TC qdisc init 
+# TC qdisc init - Only if no qdisc exists
 init_tc_qdisc() {
+    # Check if qdisc already exists
+    if check_existing_qdisc; then
+        TC_ACTIVE=false
+        TC_MANAGED_BY_US=false
+        log "✓ Running in PASSIVE mode (no TC control)"
+        log "✓ Siege will generate traffic at maximum capacity"
+        return 0  # Success, but we won't manage TC
+    fi
+    
     log "Initializing TC qdisc on interface $INTERFACE"
     tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
     
     if tc qdisc add dev "$INTERFACE" root tbf rate "$MIN_RATE" burst "$BURST_SIZE" latency "$LATENCY"; then
         TC_ACTIVE=true
-        log "TC qdisc initialized successfully"
+        TC_MANAGED_BY_US=true
+        log "✓ TC qdisc initialized successfully (managed by this script)"
         return 0
     else
         log "ERROR: Failed to initialize TC qdisc"
@@ -277,9 +320,14 @@ init_tc_qdisc() {
     fi
 }
 
-# TC qdisc update 
+# TC qdisc update - Only if we manage the qdisc
 update_tc_rate() {
     local new_rate="$1"
+    
+    # Don't update if we're not managing TC
+    if [ "$TC_MANAGED_BY_US" != true ]; then
+        return 0
+    fi
     
     if [ "$TC_ACTIVE" = true ]; then
         if tc qdisc change dev "$INTERFACE" root tbf rate "$new_rate" burst "$BURST_SIZE" latency "$LATENCY" 2>/dev/null; then
@@ -292,6 +340,7 @@ update_tc_rate() {
             else
                 log "ERROR: Failed to reinitialize TC qdisc"
                 TC_ACTIVE=false
+                TC_MANAGED_BY_US=false
                 return 1
             fi
         fi
@@ -329,7 +378,12 @@ EOF
 start_siege_flood() {
     log "Starting Siege HTTP flood to $TARGET_URL"
     log "Max concurrent users: $MAX_CONCURRENT"
-    log "Mode: Benchmark (no delays, maximum speed)"
+    
+    if [ "$TC_MANAGED_BY_US" = true ]; then
+        log "Mode: Benchmark (max speed) - TC qdisc will control rate"
+    else
+        log "Mode: Benchmark (max speed) - PASSIVE (no TC control)"
+    fi
     
     siege \
         -R "$SIEGE_RC_FILE" \
@@ -341,9 +395,7 @@ start_siege_flood() {
     SIEGE_PID=$!
     
     if [ -n "$SIEGE_PID" ] && kill -0 "$SIEGE_PID" 2>/dev/null; then
-        log "Siege started successfully (PID: $SIEGE_PID)"
-        log "Siege is running at MAXIMUM CAPACITY"
-        log "TC qdisc will control actual traffic rate"
+        log "✓ Siege started successfully (PID: $SIEGE_PID)"
         return 0
     else
         log "ERROR: Failed to start Siege"
@@ -354,7 +406,7 @@ start_siege_flood() {
 # Wait for target to be ready
 wait_for_target_ready() {
     local target_host=$(echo $TARGET_URL | sed -e 's|^http://||' -e 's|^https://||' -e 's|:.*||' -e 's|/.*||')
-    local max_wait=180
+    local max_wait=300
     local waited=0
     
     log "Waiting for target $target_host to be ready..."
@@ -475,16 +527,14 @@ monitor_target_health() {
 generate_compressed_pattern_python() {
     local duration_seconds=$1
     
-    log "=== SIEGE + TC QDISC SIMULATION ==="
+    log "=== SIEGE + TC QDISC SIMULATION WITH SAFE DETECTION ==="
     log "Math Engine: Python3 with accurate mathematical functions"
     log "Compression factor: ${TIME_COMPRESSION}x"
     log "Real duration: ${duration_seconds}s"
     log "Target URL: $TARGET_URL"
     
-    if ! init_tc_qdisc; then
-        log "ERROR: Cannot initialize TC qdisc"
-        return 1
-    fi
+    # Try to init TC qdisc (will detect existing)
+    init_tc_qdisc
     
     if ! start_siege_flood; then
         log "ERROR: Cannot start Siege flood"
@@ -502,7 +552,7 @@ generate_compressed_pattern_python() {
     
     while [ $current_time -lt $duration_seconds ]; do
         local python_output
-        if python_output=$(python3 /tmp/traffic_calculator.py compressed $current_time $TIME_COMPRESSION 2>/dev/null); then
+        if python_output=$(python3 "$PYTHON_CALCULATOR" compressed $current_time $TIME_COMPRESSION 2>/dev/null); then
             local final_rps=$(echo "$python_output" | awk '{print $1}')
             local virtual_hour=$(echo "$python_output" | awk '{print $2}')
             local virtual_day=$(echo "$python_output" | awk '{print $3}')
@@ -510,11 +560,17 @@ generate_compressed_pattern_python() {
             
             local bandwidth=$(rps_to_bandwidth "$final_rps")
             
-            if [ "$bandwidth" != "$last_rate" ]; then
-                if update_tc_rate "$bandwidth"; then
-                    log "T+${current_time}s | Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID}"
-                    last_rate="$bandwidth"
+            if [ "$TC_MANAGED_BY_US" = true ]; then
+                # We control TC, update it
+                if [ "$bandwidth" != "$last_rate" ]; then
+                    if update_tc_rate "$bandwidth"; then
+                        log "T+${current_time}s | Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID} [TC-ACTIVE]"
+                        last_rate="$bandwidth"
+                    fi
                 fi
+            else
+                # Passive mode, just log
+                log "T+${current_time}s | Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | RPS: ${final_rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID} [PASSIVE]"
             fi
         fi
         
@@ -532,14 +588,11 @@ generate_yoyo_pattern_python() {
     local duration_seconds=$1
     local yoyo_type="${2:-square}"
     
-    log "=== SIEGE + TC QDISC YO-YO PATTERN ==="
+    log "=== SIEGE + TC QDISC YO-YO PATTERN WITH SAFE DETECTION ==="
     log "Type: $yoyo_type | Duration: ${duration_seconds}s"
     log "Target URL: $TARGET_URL"
     
-    if ! init_tc_qdisc; then
-        log "ERROR: Cannot initialize TC qdisc"
-        return 1
-    fi
+    init_tc_qdisc
     
     if ! start_siege_flood; then
         log "ERROR: Cannot start Siege flood"
@@ -556,14 +609,18 @@ generate_yoyo_pattern_python() {
     
     while [ $current_time -lt $duration_seconds ]; do
         local python_output
-        if python_output=$(python3 /tmp/traffic_calculator.py yoyo $current_time $yoyo_type 2>/dev/null); then
+        if python_output=$(python3 "$PYTHON_CALCULATOR" yoyo $current_time $yoyo_type 2>/dev/null); then
             local rps=$(echo "$python_output" | awk '{print $1}')
             local cycle_pos=$(echo "$python_output" | awk '{print $2}')
             
             local bandwidth=$(rps_to_bandwidth "$rps")
             
-            if update_tc_rate "$bandwidth"; then
-                log "T+${current_time}s | Cycle: ${cycle_pos} | RPS: ${rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID} [$yoyo_type]"
+            if [ "$TC_MANAGED_BY_US" = true ]; then
+                if update_tc_rate "$bandwidth"; then
+                    log "T+${current_time}s | Cycle: ${cycle_pos} | RPS: ${rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID} [$yoyo_type] [TC-ACTIVE]"
+                fi
+            else
+                log "T+${current_time}s | Cycle: ${cycle_pos} | RPS: ${rps} | BW: ${bandwidth} | Siege: ${SIEGE_PID} [$yoyo_type] [PASSIVE]"
             fi
         fi
         
@@ -624,7 +681,7 @@ main() {
     local mode="${5:-python-compressed}"
     local yoyo_type="${6:-square}"
     
-    log "=== SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART ==="
+    log "=== SIEGE HTTP FLOOD SIMULATOR WITH AUTO-RESTART + SAFE TC DETECTION ==="
     log "Target URL: $TARGET_URL"
     log "Interface: $INTERFACE"
     log "Duration: ${DURATION}s"
@@ -640,9 +697,9 @@ main() {
     
     if [ "$PYTHON_AVAILABLE" = true ]; then
         create_python_calculator
-        log "Python math calculator created successfully"
+        log "✓ Python math calculator created successfully"
     else
-        log "Python not available, cannot run"
+        log "ERROR: Python not available, cannot run"
         exit 1
     fi
     
@@ -662,5 +719,17 @@ main() {
     log "=== SIMULATION COMPLETED ==="
     log "Log file: $LOG_FILE"
 }
+
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Siege HTTP Flood Simulator with Safe TC Detection"
+    echo "Usage: $0 [TARGET_URL] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]"
+    echo ""
+    echo "This script will:"
+    echo "  - Detect existing TC qdisc on the interface"
+    echo "  - Run in PASSIVE mode if qdisc exists (no TC control)"
+    echo "  - Run in ACTIVE mode if no qdisc exists (with TC control)"
+    echo "  - Auto-restart Siege if target reboots"
+    exit 0
+fi
 
 main "$@"
