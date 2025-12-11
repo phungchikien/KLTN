@@ -1,1 +1,155 @@
 
+heat_template_version: wallaby
+description: >
+  Base HOT for Sample VNF
+
+parameters:
+  nfv:
+    type: json
+  VDU1-scaling:
+    type: json
+  VDU1-scale-level:
+    type: json
+
+resources:
+  VDU1:
+    type: OS::Nova::Server
+    properties:
+      # flavor: { get_param: [P-VDU1, computeFlavourId] }
+      flavor: { get_resource: flavor }
+      name: VDU1
+      key_name: { get_param: [nfv, VDU, VDU1, key_name] }
+      # metadata: { get_param: metadata }
+      block_device_mapping:
+        - delete_on_termination: true
+          device_name: vda
+          snapshot_id: { get_param: [nfv, VDU, VDU1, vcImageId] }
+      networks:
+        - port:
+            get_resource: VDU1_CP1
+      user_data_format: RAW
+      user_data: # wait 10-15 minutes (after created) for the server to be ready, sometimes it even takes > 1 hour
+        str_replace:
+          template: |
+            #!/bin/bash
+            echo "IP: $cp1 ----- Floating: $fip" > /var/www/html/index.html 
+            echo "USER DATA SETUP COMPLETED"
+            exit 0
+          params:
+            $cp1: { get_attr: [VDU1_CP1, fixed_ips, 0, ip_address] }
+            $fip: { get_attr: [VDU1_floatingIP, floating_ip_address] }
+      # availability_zone: { get_param: zone }
+
+  VDU1_CP1:
+    type: OS::Neutron::Port
+    properties:
+      network: { get_param: [nfv, CP, VDU1_CP1, network] }
+      fixed_ips:
+        - subnet: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, subnet] }
+          # ip_address: { get_param: [nfv, CP, VDU1_CP1, fixed_ips, 0, ip_address] }
+      security_groups: [{ get_param: [nfv, CP, VDU1_CP1, security_group] }]
+
+  # Floating IP, remove this when deploying in a public cloud
+  VDU1_floatingIP:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network: public
+      port_id: { get_resource: VDU1_CP1 }
+
+  flavor:
+    type: OS::Nova::Flavor
+    properties:
+      is_public: false
+      ram:
+        {
+          get_param:
+            [VDU1-scaling, scale-levels, { get_param: VDU1-scale-level }, ram],
+        }
+      vcpus:
+        {
+          get_param:
+            [VDU1-scaling, scale-levels, { get_param: VDU1-scale-level }, vcpu],
+        }
+
+  cpu_alarm_high:
+    type: OS::Aodh::GnocchiAggregationByResourcesAlarm
+    properties:
+      description: Scale up if CPU > threshold
+      metric: cpu ## important    cpu, not cpu_util
+      aggregation_method: rate:mean
+      granularity: 60
+      evaluation_periods: 5
+      threshold:
+        {
+          get_param:
+            [
+              VDU1-scaling,
+              scale-levels,
+              { get_param: VDU1-scale-level },
+              cpu_threshold_hi,
+            ],
+        }
+      resource_type: instance
+      comparison_operator: gt
+      alarm_actions:
+        if:
+          - { get_param: [VDU1-scaling, enable_autoscale] }
+          - - str_replace:
+                template: trust+url/stack_id/VDU1/SCALE_OUT
+                params:
+                  url: { get_param: [VDU1-scaling, alarm_post_url] }
+                  stack_id: { get_param: "OS::stack_id" }
+      query:
+        str_replace:
+          template: '{"=": {"id": "VDU1_id"}}'
+          params:
+            VDU1_id: { get_resource: VDU1 }
+
+  cpu_alarm_low:
+    type: OS::Aodh::GnocchiAggregationByResourcesAlarm
+    properties:
+      description: Scale down if CPU < threshold
+      metric: cpu
+      aggregation_method: rate:mean
+      granularity: 60
+      evaluation_periods: 5
+      threshold:
+        {
+          get_param:
+            [
+              VDU1-scaling,
+              scale-levels,
+              { get_param: VDU1-scale-level },
+              cpu_threshold_lo,
+            ],
+        }
+      resource_type: instance
+      comparison_operator: lt
+      alarm_actions:
+        if:
+          - { get_param: [VDU1-scaling, enable_autoscale] }
+          - - str_replace:
+                template: trust+url/stack_id/VDU1/SCALE_IN
+                params:
+                  url: { get_param: [VDU1-scaling, alarm_post_url] }
+                  stack_id: { get_param: "OS::stack_id" }
+      query:
+        str_replace:
+          template: '{"=": {"id": "VDU1_id"}}'
+          params:
+            VDU1_id: { get_resource: VDU1 }
+
+outputs:
+  website_url:
+    value:
+      str_replace:
+        template: http://host/
+        params:
+          host: { get_attr: [VDU1_floatingIP, floating_ip_address] }
+    description: >
+      This URL is the "external" URL that can be used to access the
+      Wordpress site.
+
+  instance_id:
+    description: "ID of VDU1"
+    value: { get_resource: VDU1 }
