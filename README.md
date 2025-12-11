@@ -12,6 +12,10 @@ Repo gồm nhiều file bash shell mô tả nhiều vector tấn công DoS khác
 ## Luồng hoạt động và giải thích chi tiết công cụ
 
 Công cụ sử dụng các tool được chạy bằng CLI, nên tôi sử dụng ngôn ngữ Bash để tối ưu tốc độ gọi câu lệnh, để đáp ứng được nhu cầu tính toán số học chính xác thì tôi sẽ kết hợp Python để tính toán.
+UDP listen trên port 9999
+SYN listen trên port 8888
+ACK listen trên port 8888
+HTTP listen trên port 80
 
 Luồng hoạt động của công cụ:
 
