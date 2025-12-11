@@ -14,8 +14,8 @@ LOG_FILE="siege_http_get_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
 # Config TC QDISC
-BURST_SIZE="32k"
-LATENCY="200ms"
+BURST_SIZE="500"
+LATENCY="5ms"
 MIN_RATE="1kbit"
 MAX_RATE="2mbit"
 
