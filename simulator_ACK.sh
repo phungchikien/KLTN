@@ -2,55 +2,60 @@
 
 # =================================================================
 #             ACK FLOOD FOR EDUCATIONAL PURPOSE
+#             WITH SAFE TC QDISC DETECTION
 # =================================================================
 
 # Default parameters
-TARGET_IP="${1:-8.8.8.8}"
-INTERFACE="${2:-eth0}"
-DURATION="${3:-300}"
-TIME_COMPRESSION="${4:-288}"                        
+TARGET_IP="${1:-172.24.4.32}"
+INTERFACE="${2:-br-ex}"
+DURATION="${3:-21600}"
+TIME_COMPRESSION="${4:-4}"                       
 LOG_FILE="hping3_ack_flood_$(date +%Y%m%d_%H%M%S).log"
 VERBOSE=true
 
 # TC QDISC config
 PACKET_SIZE=60        # bytes
 BURST_SIZE="500b"      # bytes
-LATENCY="5ms"
+LATENCY="100ms"
 MIN_RATE="1kbit"
 MAX_RATE="1gbit"
 
 # PID và flags
 HPING_PID=""
 TC_ACTIVE=false
+TC_MANAGED_BY_US=false  # NEW: Track if we created the qdisc
 PYTHON_AVAILABLE=false
+
+SCRIPT_PID=$$
+PYTHON_CALCULATOR="/tmp/traffic_calculator_${SCRIPT_PID}.py"
 
 # Dependencies check
 check_dependencies() {
     local missing_deps=()
     
-    if ! command -v hping3 &> /dev/null; then        # check hping3
+    if ! command -v hping3 &> /dev/null; then
         missing_deps+=("hping3")
     fi
     
-    if ! command -v bc &> /dev/null; then            # check bc
+    if ! command -v bc &> /dev/null; then
         missing_deps+=("bc")
     fi
     
-    if ! command -v tc &> /dev/null; then            # check iproute2 or tc
+    if ! command -v tc &> /dev/null; then
         missing_deps+=("iproute2")
     fi
     
-    if [[ $EUID -ne 0 ]]; then                       # check root
+    if [[ $EUID -ne 0 ]]; then
         log "ERROR: Root privileges required"
         exit 1
     fi
     
-    if [ ${#missing_deps[@]} -gt 0 ]; then           # print out all missing dependencies
+    if [ ${#missing_deps[@]} -gt 0 ]; then
         log "ERROR: Missing dependencies: ${missing_deps[*]}"
         exit 1
     fi
     
-    if ! ip link show "$INTERFACE" &>/dev/null; then        # check NIC name
+    if ! ip link show "$INTERFACE" &>/dev/null; then
         log "ERROR: Interface $INTERFACE does not exist"
         exit 1
     fi
@@ -59,14 +64,13 @@ check_dependencies() {
 # Check Python availability
 check_python() {
     if command -v python3 &> /dev/null; then
-        # Check python3 math libraries
         if python3 -c "import math; print('Python math OK')" &>/dev/null; then
             PYTHON_AVAILABLE=true
             log "Python3 with math module: Available"
             return 0
         fi
     fi
-        # Check python math libraries when user do not have python3
+    
     if command -v python &> /dev/null; then
         if python -c "import math; print('Python math OK')" &>/dev/null; then
             PYTHON_AVAILABLE=true
@@ -87,7 +91,30 @@ log() {
     echo "[$timestamp] $message" | tee -a "$LOG_FILE"
 }
 
-# Cleanup Function - Clean all process
+# NEW: Check if TC qdisc already exists
+check_existing_qdisc() {
+    local qdisc_info=$(tc qdisc show dev "$INTERFACE" 2>/dev/null | grep "qdisc" | head -n1)
+    
+    if [ -z "$qdisc_info" ]; then
+        log "ℹ No TC qdisc found on $INTERFACE"
+        return 1  # No qdisc exists
+    fi
+    
+    # Check if it's just the default qdisc (pfifo_fast, fq_codel, etc.)
+    if echo "$qdisc_info" | grep -qE "qdisc (pfifo_fast|fq_codel|noqueue|mq)"; then
+        log "ℹ Only default qdisc found on $INTERFACE: $qdisc_info"
+        return 1  # Default qdisc, we can replace it
+    fi
+    
+    # There's a configured qdisc (tbf, htb, etc.)
+    log "⚠ EXISTING QDISC DETECTED on $INTERFACE:"
+    log "   $qdisc_info"
+    log "   → Script will run WITHOUT TC control (passive mode)"
+    log "   → Traffic generation only, no bandwidth shaping"
+    return 0  # Qdisc exists, don't touch it
+}
+
+# Cleanup Function
 cleanup() {
     log "=== CLEANUP STARTED ==="
     
@@ -101,13 +128,20 @@ cleanup() {
         wait "$HPING_PID" 2>/dev/null
     fi
     
-    if [ "$TC_ACTIVE" = true ]; then
-        log "Removing tc qdisc from interface $INTERFACE"
+    # Only remove qdisc if WE created it
+    if [ "$TC_MANAGED_BY_US" = true ]; then
+        log "Removing TC qdisc (created by this script)"
         tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
-        TC_ACTIVE=false
+    else
+        log "Leaving existing TC qdisc untouched"
     fi
     
     log "=== CLEANUP COMPLETED ==="
+    
+    if [ -f "$PYTHON_CALCULATOR" ]; then
+        rm -f "$PYTHON_CALCULATOR"
+    fi
+
     exit 0
 }
 
@@ -115,92 +149,51 @@ trap cleanup EXIT INT TERM
 
 # Python script for calculating traffic patterns
 create_python_calculator() {
-    cat << 'PYTHON_SCRIPT' > /tmp/traffic_calculator.py
+    log "Creating Python calculator: $PYTHON_CALCULATOR"
+    
+    cat << 'PYTHON_SCRIPT' > "$PYTHON_CALCULATOR"
 #!/usr/bin/env python3
 import math
 import sys
 
 def calculate_hourly_rate(hour, scale_factor=120):
-    """
-    Calculate traffic rate hourly with peak patterns
-    """
-    # Morning peak (9 AM) - Gaussian distribution
     morning_peak = 36 * math.exp(-((hour - 9) ** 2) / 6.8)
-    
-    # Evening peak (8 PM) - Gaussian distribution  
     evening_peak = 55 * math.exp(-((hour - 20) ** 2) / 7.84)
-    
-    # Night drop (2:30 AM) - Negative Gaussian
     night_drop = -15 * math.exp(-((hour - 2.5) ** 2) / 3.24)
-    
-    # Daily sine wave cycle
     daily_cycle = 5 * math.sin(math.pi * hour / 12 - math.pi/2)
-    
-    # Base traffic level
     base_level = 20
     
-    # Combine all factors
     traffic_factor = base_level + morning_peak + evening_peak + night_drop + daily_cycle
-    
-    # Calculate PPS with minimum threshold
     pps = max(300, traffic_factor * scale_factor)
     
     return int(pps)
 
 def calculate_weekly_multiplier(day_of_week):
-    """
-    Calculate the multiplier factor by day of the week
-    """
     base = 87
-    
-    # Weekly sine pattern
     sine_component = 8 * math.sin(2 * math.pi * day_of_week / 7 + math.pi/7)
-    
-    # Weekend spike (Saturday = day 6)
     weekend_spike = 5 * math.exp(-((day_of_week - 6) ** 2) / 2.25)
-    
-    # Combine factors
     weekly_factor = (base + sine_component + weekend_spike) / base
-    
     return weekly_factor
 
 def calculate_minute_factor(minute_in_hour):
-    """
-    Calculate the minute-by-minute variation within an hour
-    """
     return 1 + 0.3 * math.sin(2 * math.pi * minute_in_hour / 60)
 
 def get_compressed_time(elapsed_seconds, compression_factor):
-    """
-    Calculating virtual time with compression factor
-    """
     virtual_hours = elapsed_seconds * compression_factor / 3600
     current_hour = int(virtual_hours % 24)
-    
     virtual_days = virtual_hours / 24
     day_of_week = int(virtual_days % 7) + 1
-    
     seconds_in_hour = (elapsed_seconds * compression_factor) % 3600
     minute_in_hour = int(seconds_in_hour / 60)
-    
     return current_hour, day_of_week, minute_in_hour
 
 def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.1):
-    """
-    Total traffic rate with multiple factors
-    """
-    # Get virtual time components
     hour, day, minute = get_compressed_time(elapsed_seconds, compression_factor)
-    
-    # Calculate base rates
     hourly_rate = calculate_hourly_rate(hour)
     weekly_multiplier = calculate_weekly_multiplier(day)
     minute_factor = calculate_minute_factor(minute)
-    
-    # Combine all factors
     base_rate = hourly_rate * weekly_multiplier * minute_factor
     
-    # Add random noise
     import random
     noise = random.uniform(-noise_factor, noise_factor)
     final_rate = base_rate * (1 + noise)
@@ -208,9 +201,6 @@ def calculate_traffic_rate(elapsed_seconds, compression_factor, noise_factor=0.1
     return max(1, int(final_rate)), hour, day, minute
 
 def calculate_yoyo_rate(elapsed_seconds, cycle_duration=1800, yoyo_type="square"):
-    """
-    Calculating pattern rates
-    """
     cycle_position = (elapsed_seconds % cycle_duration) / cycle_duration
     
     if yoyo_type == "square":
@@ -257,33 +247,28 @@ PYTHON_SCRIPT
     chmod +x /tmp/traffic_calculator.py
 }
 
-# Fallback math functions for when Python is not available
+# Fallback math
 calculate_simple_rate() {
     local hour=$1
     local day=$2
     local minute=$3
     
-    # Simplified pattern using only bc capabilities
     local base_rate=5000
     
-    # Simple hour-based variation
     if [ $hour -ge 8 ] && [ $hour -le 10 ]; then
-        base_rate=8000  # Morning peak
+        base_rate=8000
     elif [ $hour -ge 19 ] && [ $hour -le 21 ]; then
-        base_rate=12000  # Evening peak
+        base_rate=12000
     elif [ $hour -ge 1 ] && [ $hour -le 5 ]; then
-        base_rate=2000   # Night low
+        base_rate=2000
     fi
     
-    # Weekend multiplier
     if [ $day -eq 6 ] || [ $day -eq 7 ]; then
         base_rate=$(echo "scale=0; $base_rate * 1.3 / 1" | bc -l)
     fi
     
-    # Add some variation based on minute
     local minute_var=$(echo "scale=0; $minute % 10" | bc -l)
     local variation=$(echo "scale=0; $base_rate * $minute_var / 100" | bc -l)
-    
     local final_rate=$(echo "scale=0; $base_rate + $variation" | bc -l)
     echo "$final_rate"
 }
@@ -312,14 +297,23 @@ pps_to_bandwidth() {
     fi
 }
 
-# TC qdisc init functions
+# TC qdisc init - Only if no qdisc exists
 init_tc_qdisc() {
+    # Check if qdisc already exists
+    if check_existing_qdisc; then
+        TC_ACTIVE=false
+        TC_MANAGED_BY_US=false
+        log "✓ Running in PASSIVE mode (no TC control)"
+        return 0  # Success, but we won't manage TC
+    fi
+    
     log "Initializing TC qdisc on interface $INTERFACE"
     tc qdisc del dev "$INTERFACE" root 2>/dev/null || true
     
     if tc qdisc add dev "$INTERFACE" root tbf rate "$MIN_RATE" burst "$BURST_SIZE" latency "$LATENCY"; then
         TC_ACTIVE=true
-        log "TC qdisc initialized successfully"
+        TC_MANAGED_BY_US=true
+        log "✓ TC qdisc initialized successfully (managed by this script)"
         return 0
     else
         log "ERROR: Failed to initialize TC qdisc"
@@ -327,9 +321,14 @@ init_tc_qdisc() {
     fi
 }
 
-# UPdate tc rate
+# Update tc rate - Only if we manage the qdisc
 update_tc_rate() {
     local new_rate="$1"
+    
+    # Don't update if we're not managing TC
+    if [ "$TC_MANAGED_BY_US" != true ]; then
+        return 0
+    fi
     
     if [ "$TC_ACTIVE" = true ]; then
         if tc qdisc change dev "$INTERFACE" root tbf rate "$new_rate" burst "$BURST_SIZE" latency "$LATENCY" 2>/dev/null; then
@@ -342,6 +341,7 @@ update_tc_rate() {
             else
                 log "ERROR: Failed to reinitialize TC qdisc"
                 TC_ACTIVE=false
+                TC_MANAGED_BY_US=false
                 return 1
             fi
         fi
@@ -350,7 +350,7 @@ update_tc_rate() {
     fi
 }
 
-# Init hping3 in background
+# Init hping3
 start_hping3_flood() {
     log "Starting hping3 flood to $TARGET_IP"
     
@@ -365,7 +365,7 @@ start_hping3_flood() {
     HPING_PID=$!
     
     if [ -n "$HPING_PID" ] && kill -0 "$HPING_PID" 2>/dev/null; then
-        log "hping3 started successfully (PID: $HPING_PID)"
+        log "✓ hping3 started successfully (PID: $HPING_PID)"
         return 0
     else
         log "ERROR: Failed to start hping3"
@@ -373,19 +373,18 @@ start_hping3_flood() {
     fi
 }
 
-# Main pattern generation với Python support
+# Main pattern generation
 generate_compressed_pattern_python() {
     local duration_seconds=$1
     
-    log "=== PYTHON-ENHANCED TC QDISC SIMULATION ==="
+    log "=== ACK FLOOD SIMULATOR ==="
     log "Math Engine: Python3 with accurate mathematical functions"
     log "Compression factor: ${TIME_COMPRESSION}x"
-    log "Real duration: ${duration_seconds}s = Virtual: $(python3 -c "print(f'{$duration_seconds * $TIME_COMPRESSION / 3600:.1f}')")h"
+    log "Real duration: ${duration_seconds}s"
+    log "Target IP: $TARGET_IP"
     
-    if ! init_tc_qdisc; then
-        log "ERROR: Cannot initialize TC qdisc"
-        return 1
-    fi
+    # Try to init TC qdisc (will detect existing)
+    init_tc_qdisc
     
     if ! start_hping3_flood; then
         log "ERROR: Cannot start hping3 flood"
@@ -398,8 +397,7 @@ generate_compressed_pattern_python() {
     
     while [ $current_time -lt $duration_seconds ]; do
         local python_output
-        if python_output=$(python3 /tmp/traffic_calculator.py compressed $current_time $TIME_COMPRESSION 2>/dev/null); then
-            # Parse Python output: "rate hour day minute"
+        if python_output=$(python3 "$PYTHON_CALCULATOR" compressed $current_time $TIME_COMPRESSION 2>/dev/null); then
             local final_pps=$(echo "$python_output" | awk '{print $1}')
             local virtual_hour=$(echo "$python_output" | awk '{print $2}')
             local virtual_day=$(echo "$python_output" | awk '{print $3}')
@@ -407,28 +405,18 @@ generate_compressed_pattern_python() {
             
             local bandwidth=$(pps_to_bandwidth "$final_pps")
             
-            if [ "$bandwidth" != "$last_rate" ]; then
-                if update_tc_rate "$bandwidth"; then
-                    log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth} [PYTHON]"
-                    last_rate="$bandwidth"
-                else
-                    log "T+${current_time}s | ERROR: Failed to update TC rate to $bandwidth"
+            if [ "$TC_MANAGED_BY_US" = true ]; then
+                # We control TC, update it
+                if [ "$bandwidth" != "$last_rate" ]; then
+                    if update_tc_rate "$bandwidth"; then
+                        log "T+${current_time}s | Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth} [TC-ACTIVE]"
+                        last_rate="$bandwidth"
+                    fi
                 fi
-            elif [ "$VERBOSE" = true ]; then
-                log "T+${current_time}s | Virtual: Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth} [unchanged]"
+            else
+                # Passive mode, just log
+                log "T+${current_time}s | Day${virtual_day} ${virtual_hour}:$(printf "%02d" $virtual_minute) | PPS: ${final_pps} | BW: ${bandwidth} [PASSIVE]"
             fi
-        else
-            log "T+${current_time}s | ERROR: Python calculation failed, using fallback"
-            # Fallback to simple calculation
-            local hour=$(echo "scale=0; ($current_time * $TIME_COMPRESSION / 3600) % 24" | bc -l)
-            local day=$(echo "scale=0; ($current_time * $TIME_COMPRESSION / 86400) % 7 + 1" | bc -l)
-            local minute=$(echo "scale=0; ($current_time * $TIME_COMPRESSION % 3600) / 60" | bc -l)
-            
-            local simple_rate=$(calculate_simple_rate $hour $day $minute)
-            local bandwidth=$(pps_to_bandwidth "$simple_rate")
-            
-            update_tc_rate "$bandwidth"
-            log "T+${current_time}s | Virtual: Day${day} ${hour}:$(printf "%02d" $minute) | PPS: ${simple_rate} | BW: ${bandwidth} [FALLBACK]"
         fi
         
         sleep $update_interval
@@ -436,18 +424,15 @@ generate_compressed_pattern_python() {
     done
 }
 
-# Yo-yo pattern with Python
+# Yo-yo pattern
 generate_yoyo_pattern_python() {
     local duration_seconds=$1
     local yoyo_type="${2:-square}"
     
-    log "=== PYTHON-ENHANCED YO-YO PATTERN ==="
+    log "=== ACK FLOOD YO-YO PATTERN ==="
     log "Type: $yoyo_type | Duration: ${duration_seconds}s"
     
-    if ! init_tc_qdisc; then
-        log "ERROR: Cannot initialize TC qdisc"
-        return 1
-    fi
+    init_tc_qdisc
     
     if ! start_hping3_flood; then
         log "ERROR: Cannot start hping3 flood"
@@ -459,19 +444,19 @@ generate_yoyo_pattern_python() {
     
     while [ $current_time -lt $duration_seconds ]; do
         local python_output
-        if python_output=$(python3 /tmp/traffic_calculator.py yoyo $current_time $yoyo_type 2>/dev/null); then
+        if python_output=$(python3 "$PYTHON_CALCULATOR" yoyo $current_time $yoyo_type 2>/dev/null); then
             local pps=$(echo "$python_output" | awk '{print $1}')
             local cycle_pos=$(echo "$python_output" | awk '{print $2}')
             
             local bandwidth=$(pps_to_bandwidth "$pps")
             
-            if update_tc_rate "$bandwidth"; then
-                log "T+${current_time}s | Cycle: ${cycle_pos} | PPS: ${pps} | BW: ${bandwidth} [$yoyo_type-PYTHON]"
+            if [ "$TC_MANAGED_BY_US" = true ]; then
+                if update_tc_rate "$bandwidth"; then
+                    log "T+${current_time}s | Cycle: ${cycle_pos} | PPS: ${pps} | BW: ${bandwidth} [TC-ACTIVE]"
+                fi
             else
-                log "T+${current_time}s | ERROR: Failed to update yo-yo rate to $bandwidth"
+                log "T+${current_time}s | Cycle: ${cycle_pos} | PPS: ${pps} | BW: ${bandwidth} [PASSIVE]"
             fi
-        else
-            log "T+${current_time}s | ERROR: Python yo-yo calculation failed"
         fi
         
         sleep $update_interval
@@ -479,167 +464,12 @@ generate_yoyo_pattern_python() {
     done
 }
 
-# Usage
-show_usage() {
-    cat << EOF
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                    HPING3 TRAFFIC SIMULATOR WITH PYTHON                      ║
-║                    Python-Enhanced Traffic Pattern Generator                 ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-
-USAGE:
-   $0 [TARGET_IP] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]
-
-PARAMETERS:
-   TARGET_IP     : Target IP address (default: 8.8.8.8)
-   INTERFACE     : Network interface (default: eth0)
-   DURATION      : Test duration in seconds (default: 300)
-   COMPRESSION   : Time compression factor (default: 288x)
-   MODE          : Traffic pattern mode (see below)
-   YOYO_TYPE     : Yo-yo pattern type (for python-yoyo mode only)
-
-AVAILABLE MODES:
-   python-compressed  - Compressed time simulation with Python math engine
-                       ✓ Primary: Python mathematical functions (Gaussian, sine waves)
-                       ✓ Fallback: Simple bash calculations if Python fails
-                       ✓ Update interval: 60 seconds
-                       
-   python-yoyo       - Yo-yo pattern simulation with Python engine  
-                       ✓ Python-only: Advanced mathematical yo-yo patterns
-                       ✓ No fallback: Requires Python3 with math module
-                       ✓ Update interval: 60 seconds
-
-YOYO PATTERN TYPES (for python-yoyo mode):
-   square      - Square wave pattern (High: 5000 PPS, Low: 500 PPS)
-                 └─ 50% high traffic, 50% low traffic per cycle
-                 
-   sawtooth    - Gradual ramp up then sudden drop
-                 └─ Linear increase 1000→10000 PPS (80%), then drop (20%)
-                 
-   burst       - Short bursts with cooldown periods
-                 └─ Burst: 5000 PPS (20%), Cooldown: 2500 PPS (40%), Idle: 1000 PPS (40%)
-
-ARCHITECTURE OVERVIEW:
-   ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-   │  Python Engine  │───▶│  Traffic Pattern │───▶ │   TC Qdisc      │
-   │  (Primary)      │     │   Calculation    │     │  (Bandwidth     │
-   │                 │     │                  │     │   Control)      │
-   │  Bash Fallback  │───▶│                   │    │                 │
-   │  (Backup)*      │     │                  │     │                 │
-   └─────────────────┘     └──────────────────┘     └─────────────────┘
-   
-   * Fallback chỉ available cho python-compressed mode
-
-PYTHON INTEGRATION FEATURES:
-   ✓ Mathematical precision with exp(), sin(), cos() functions
-   ✓ Gaussian curves for realistic morning/evening peaks
-   ✓ Sine wave daily cycles and weekly variations  
-   ✓ Complex multi-factor traffic modeling
-   ✓ Automatic fallback to bash arithmetic when Python unavailable
-   ✓ Real-time Python script generation (/tmp/traffic_calculator.py)
-
-EXAMPLES - CHANGE EXAMPLE IP TO TARGET IP:
-   # Basic compressed time simulation (1 week compressed to ~4 minutes)
-   # Uses Python math engine with fallback support
-   $0 192.168.1.100 eth0 300 72 python-compressed
-   
-   # Square wave yo-yo pattern for 3 minutes (Python-only)
-   # High/Low alternating every 10 seconds
-   $0 8.8.8.8 eth0 180 1 python-yoyo square
-   
-   # Sawtooth pattern with custom compression
-   # Gradual ramp up then sudden drop pattern  
-   $0 10.0.0.1 wlan0 600 36 python-yoyo sawtooth
-   
-   # Burst pattern for stress testing
-   # Short high bursts with long idle periods
-   $0 192.168.1.1 eth1 120 1 python-yoyo burst
-   
-   # Long compressed simulation (2 weeks in 10 minutes)
-   $0 203.0.113.1 eth0 600 144 python-compressed
-
-SYSTEM REQUIREMENTS:
-   REQUIRED:
-   - Root privileges (sudo)
-   - hping3 package
-   - iproute2 package (tc command)
-   - bc calculator
-   
-   RECOMMENDED (for full functionality):
-   - Python3 with math module
-     └─ Without Python: compressed mode uses simple fallback
-     └─ Without Python: yo-yo mode will fail
-   
-   NETWORK:
-   - Valid network interface
-   - Target should be reachable (optional)
-   - Sufficient bandwidth for traffic generation
-
-EXECUTION FLOW:
-   1. Check dependencies (hping3, tc, bc, root)
-   2. Check Python availability (python3 + math module)  
-   3. Create Python calculator script (if Python available)
-   4. Initialize TC qdisc (Token Bucket Filter)
-   5. Start hping3 ACK flood (background process)
-   6. Main loop:
-      - Calculate traffic rate (Python primary, bash fallback)
-      - Convert PPS to bandwidth  
-      - Update TC qdisc rate
-      - Sleep and repeat
-   7. Cleanup on exit (kill hping3, remove qdisc, cleanup temp files)
-
-TRAFFIC PATTERNS EXPLAINED:
-   
-   COMPRESSED MODE:
-   - Simulates realistic daily/weekly traffic patterns
-   - Morning peak (~9 AM): Gaussian curve with moderate traffic
-   - Evening peak (~8 PM): Gaussian curve with higher traffic  
-   - Night dip (~2:30 AM): Reduced traffic period
-   - Weekend spike: Increased traffic on weekends
-   - Continuous variation: Minute-by-minute fluctuations
-   
-   YOYO MODES:
-   - Square: Abrupt high/low transitions for load balancer testing
-   - Sawtooth: Gradual scaling up for auto-scaling tests
-   - Burst: Short intensive periods for buffer overflow tests
-
-IMPORTANT WARNINGS:
-   - This tool generates significant network traffic
-   - Use only on test networks or with proper authorization
-   - Monitor system resources during execution
-   - Ensure target systems can handle the traffic load
-   - Stop immediately if network performance degrades
-
-MONITORING & LOGS:
-   - All activity logged to: hping3_traffic_python_YYYYMMDD_HHMMSS.log
-   - Real-time status: [PYTHON] for math engine, [FALLBACK] for bash
-   - TC qdisc changes logged with timestamps
-   - Virtual time tracking for compressed mode
-   - Pattern cycle tracking for yo-yo mode
-
-TROUBLESHOOTING:
-   - "Python not available" → Install python3 or use fallback  
-   - "TC qdisc failed" → Check interface name and permissions
-   - "hping3 failed" → Install hping3 package
-   - "Target unreachable" → Check network connectivity (warning only)
-
-HELP & SUPPORT:
-   Run with: $0 -h, $0 --help, or $0 help
-   Check logs for detailed execution information
-   
-VERSION INFO:
-   Python-Enhanced Traffic Simulator v2.0
-   Unified Architecture with Intelligent Fallback
-   
-EOF
-}
-
 # Main function
 main() {
     local mode="${5:-python-compressed}"
     local yoyo_type="${6:-square}"
     
-    log "=== PYTHON-ENHANCED HPING3 TRAFFIC SIMULATOR ==="
+    log "=== ACK FLOOD SIMULATOR WITH SAFE TC DETECTION ==="
     log "Target: $TARGET_IP"
     log "Interface: $INTERFACE" 
     log "Duration: ${DURATION}s"
@@ -649,7 +479,6 @@ main() {
     check_dependencies
     check_python
     
-    # Create Python calculator
     if [ "$PYTHON_AVAILABLE" = true ]; then
         create_python_calculator
         log "Python math calculator created successfully"
@@ -657,7 +486,6 @@ main() {
         log "Using simplified math fallback"
     fi
     
-    # Test connectivity
     if ! ping -c 1 -W 2 "$TARGET_IP" &>/dev/null; then
         log "WARNING: Target $TARGET_IP may not be reachable"
     fi
@@ -667,8 +495,7 @@ main() {
             if [ "$PYTHON_AVAILABLE" = true ]; then
                 generate_compressed_pattern_python "$DURATION"
             else
-                log "Python not available, falling back to tc-compressed mode"
-                # Would need to implement tc-compressed fallback here
+                log "Python not available, falling back to simple mode"
             fi
             ;;
         "python-yoyo")
@@ -681,22 +508,22 @@ main() {
             ;;
         *)
             log "ERROR: Unknown mode: $mode"
-            log "Available modes: python-compressed, python-yoyo"
-            show_usage
             exit 1
             ;;
     esac
-    
-    # Cleanup Python temp file
-    rm -f /tmp/traffic_calculator.py
     
     log "=== SIMULATION COMPLETED ==="
     log "Log file: $LOG_FILE"
 }
 
-# Command line handling
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    show_usage
+    echo "ACK Flood Simulator with Safe TC Detection"
+    echo "Usage: $0 [TARGET_IP] [INTERFACE] [DURATION] [COMPRESSION] [MODE] [YOYO_TYPE]"
+    echo ""
+    echo "This script will:"
+    echo "  - Detect existing TC qdisc on the interface"
+    echo "  - Run in PASSIVE mode if qdisc exists (no TC control)"
+    echo "  - Run in ACTIVE mode if no qdisc exists (with TC control)"
     exit 0
 fi
 
